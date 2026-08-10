@@ -206,6 +206,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 <section class="results-section" id="resultsSection" style="display:none">
   <div class="container">
     <div class="stats-bar" id="statsBar"></div>
+    <div id="debugPanel" style="display:none;background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px;margin:12px 0;font-size:11px;color:#aaa;font-family:monospace;white-space:pre-wrap;max-height:500px;overflow-y:auto;text-align:left"></div>
     <div id="resultsContainer"></div>
     <p class="data-note">数据来源于东方财富实时行情 · 每次筛选扫描全市场A股 · 仅供参考不构成投资建议</p>
   </div>
@@ -1132,13 +1133,36 @@ async function startScreen() {
       }
     }
 
+    // === DIAGNOSTIC ===
+    const debugInfo = {
+      totalFetched: allStocks.length,
+      topCandidates: topCandidates.length,
+      klineAvailable: Object.keys(klineData).length,
+      klineLengthDist: {},
+      scoredStocks: 0,
+      passedStocks: 0,
+      scoreADist: [], scoreBDist: [], scoreCDist: [], scoreDDist: [],
+      topScoresA: [], topScoresB: [], topScoresC: [], topScoresD: [],
+      errors: [],
+      sampleStock: null,
+    };
+
     for (const stock of topCandidates) {
       const kline = klineData[stock.code];
-      if (!kline || kline.length < 20) continue;
+      if (!kline || kline.length < 20) {
+        if (kline) {
+          const len = kline.length;
+          debugInfo.klineLengthDist[len + 'bars'] = (debugInfo.klineLengthDist[len + 'bars'] || 0) + 1;
+        }
+        continue;
+      }
+      debugInfo.scoredStocks++;
 
       // Score all four categories
       const scoreA = scoreBottomReversal(stock, kline, limitUpGene);
-      const scoreB = scoreMainWave(stock, kline, 0);
+      const stockPrefix = stock.code.substring(0,3);
+      const stockSectorLimitCount = sectorLimits[stockPrefix] || 0;
+      const scoreB = scoreMainWave(stock, kline, stockSectorLimitCount);
       const scoreC = scoreDragonReturn(stock, kline, idxChg);
       const scoreD = scoreActiveLianban(stock, kline, idxChg);
 
@@ -1150,6 +1174,17 @@ async function startScreen() {
         scoreB.stop_k_confirmed = true;
       }
 
+      // Track score distributions
+      debugInfo.scoreADist.push(scoreA.score);
+      debugInfo.scoreBDist.push(scoreB.score);
+      debugInfo.scoreCDist.push(scoreC.score);
+      debugInfo.scoreDDist.push(scoreD.score);
+      
+      if (scoreA.score > 0) debugInfo.topScoresA.push({name: stock.name, code: stock.code, score: scoreA.score, chg: stock.change_pct});
+      if (scoreB.score > 0) debugInfo.topScoresB.push({name: stock.name, code: stock.code, score: scoreB.score, chg: stock.change_pct});
+      if (scoreC.score > 0) debugInfo.topScoresC.push({name: stock.name, code: stock.code, score: scoreC.score, chg: stock.change_pct});
+      if (scoreD.score > 0) debugInfo.topScoresD.push({name: stock.name, code: stock.code, score: scoreD.score, chg: stock.change_pct});
+
       // Minimum thresholds
       const minScoreA = 12, minScoreB = 15, minScoreC = 30, minScoreD = 20;
       const passA = scoreA.score >= minScoreA;
@@ -1157,6 +1192,7 @@ async function startScreen() {
       const passC = scoreC.score >= minScoreC;
       const passD = scoreD.score >= minScoreD;
       if (!passA && !passB && !passC && !passD) continue;
+      debugInfo.passedStocks++;
 
       // Pick the best category (优先级: D > C > A > B)
       let best;
@@ -1199,6 +1235,54 @@ async function startScreen() {
     const bCount = results.filter(r => r.category === 'B').length;
     const cCount = results.filter(r => r.category === 'C').length;
     const dCount = results.filter(r => r.category === 'D').length;
+
+    // === Render Debug Info ===
+    debugInfo.topScoresA.sort((a,b) => b.score - a.score);
+    debugInfo.topScoresB.sort((a,b) => b.score - a.score);
+    debugInfo.topScoresC.sort((a,b) => b.score - a.score);
+    debugInfo.topScoresD.sort((a,b) => b.score - a.score);
+    
+    const avgA = debugInfo.scoreADist.length ? (debugInfo.scoreADist.reduce((a,b)=>a+b,0)/debugInfo.scoreADist.length).toFixed(1) : 'N/A';
+    const maxA = debugInfo.scoreADist.length ? Math.max(...debugInfo.scoreADist).toFixed(1) : 'N/A';
+    const avgB = debugInfo.scoreBDist.length ? (debugInfo.scoreBDist.reduce((a,b)=>a+b,0)/debugInfo.scoreBDist.length).toFixed(1) : 'N/A';
+    const maxB = debugInfo.scoreBDist.length ? Math.max(...debugInfo.scoreBDist).toFixed(1) : 'N/A';
+    const avgC = debugInfo.scoreCDist.length ? (debugInfo.scoreCDist.reduce((a,b)=>a+b,0)/debugInfo.scoreCDist.length).toFixed(1) : 'N/A';
+    const maxC = debugInfo.scoreCDist.length ? Math.max(...debugInfo.scoreCDist).toFixed(1) : 'N/A';
+    const avgD = debugInfo.scoreDDist.length ? (debugInfo.scoreDDist.reduce((a,b)=>a+b,0)/debugInfo.scoreDDist.length).toFixed(1) : 'N/A';
+    const maxD = debugInfo.scoreDDist.length ? Math.max(...debugInfo.scoreDDist).toFixed(1) : 'N/A';
+    
+    let debugHTML = `<b>🔍 诊断信息</b>\n`;
+    debugHTML += `API获取股票: ${debugInfo.totalFetched} 只\n`;
+    debugHTML += `Top候选: ${debugInfo.topCandidates} 只\n`;
+    debugHTML += `K线数据可用: ${debugInfo.klineAvailable} 只\n`;
+    debugHTML += `通过K线筛选(≥20天): ${debugInfo.scoredStocks} 只\n`;
+    debugHTML += `通过评分阈值: ${debugInfo.passedStocks} 只\n`;
+    debugHTML += `\n<b>K线长度分布(不足20天的):</b> ${JSON.stringify(debugInfo.klineLengthDist)}\n`;
+    debugHTML += `\n<b>评分统计 (平均/最高):</b>\n`;
+    debugHTML += `  A类: 平均=${avgA} 最高=${maxA} (阈值≥12)\n`;
+    debugHTML += `  B类: 平均=${avgB} 最高=${maxB} (阈值≥15)\n`;
+    debugHTML += `  C类: 平均=${avgC} 最高=${maxC} (阈值≥30)\n`;
+    debugHTML += `  D类: 平均=${avgD} 最高=${maxD} (阈值≥20)\n`;
+    debugHTML += `\n<b>A类Top5:</b> ${debugInfo.topScoresA.slice(0,5).map(s=>s.name+'('+s.score+'分,涨'+s.chg+'%)').join(', ') || '无'}\n`;
+    debugHTML += `<b>B类Top5:</b> ${debugInfo.topScoresB.slice(0,5).map(s=>s.name+'('+s.score+'分,涨'+s.chg+'%)').join(', ') || '无'}\n`;
+    debugHTML += `<b>C类Top5:</b> ${debugInfo.topScoresC.slice(0,5).map(s=>s.name+'('+s.score+'分,涨'+s.chg+'%)').join(', ') || '无'}\n`;
+    debugHTML += `<b>D类Top5:</b> ${debugInfo.topScoresD.slice(0,5).map(s=>s.name+'('+s.score+'分,涨'+s.chg+'%)').join(', ') || '无'}\n`;
+    
+    // Show a sample stock's detail for first candidate
+    if (topCandidates.length > 0) {
+      const sample = topCandidates[0];
+      const sk = klineData[sample.code];
+      debugHTML += `\n<b>样本股票:</b> ${sample.name}(${sample.code}) 涨幅:${sample.change_pct}% 换手:${sample.turnover_rate}%\n`;
+      debugHTML += `K线天数: ${sk ? sk.length : '无'}\n`;
+      if (sk && sk.length > 0) {
+        const lastK = sk[sk.length-1];
+        debugHTML += `最新K线: 日期=${lastK.time} 开=${lastK.open} 收=${lastK.close} 高=${lastK.high} 低=${lastK.low} 量=${lastK.volume}\n`;
+      }
+    }
+    
+    const debugPanel = document.getElementById('debugPanel');
+    debugPanel.innerHTML = debugHTML;
+    debugPanel.style.display = 'block';
 
     // Render
     renderResults(top10, {
