@@ -113,6 +113,8 @@ header { border-bottom: 1px solid var(--border); padding: 16px 0; }
 .cat-b { background: rgba(239,68,68,0.15); color: #ef4444; }
 .cat-c { background: rgba(168,85,247,0.15); color: #a855f7; }
 .badge-c { background: rgba(168,85,247,0.15); color: #a855f7; }
+.cat-d { background: rgba(59,130,246,0.15); color: #3b82f6; }
+.badge-d { background: rgba(59,130,246,0.15); color: #3b82f6; }
 
 /* Kline mini chart */
 .kline-chart { width: 100%; height: 60px; margin: 8px 0; }
@@ -163,7 +165,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
   <div class="container">
     <p class="hero-subtitle">Main Wave & Bottom Reversal Scanner</p>
     <h2 class="hero-title">捕捉<span class="gradient">主升浪</span>启动瞬间</h2>
-    <p class="hero-desc">底部蓄势 · 主升浪 · 龙回头<br>三模型扫描，基于首板六要素量化体系，精选 Top 10</p>
+    <p class="hero-desc">底部蓄势 · 主升浪 · 龙回头 · 连板追踪<br>四模型扫描，基于首板六要素+连板阶段量化体系，精选 Top 10</p>
 
     <div class="controls">
       <p class="control-label">板块选择</p>
@@ -214,7 +216,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v5.0 · 三模型量化引擎</p>
+  <p>灵犀King · AI主升 v6.0 · 四模型量化引擎</p>
 </footer>
 
 <script>
@@ -230,7 +232,8 @@ const PROGRESS_MESSAGES = [
   '扫描60日K线，识别底部蓄势形态...',
   '检测连板基因与龙回头信号...',
   '分析连板特征与主升浪结构...',
-  '三模型评分，分类排序输出...',
+  '检测底部止跌K形态，增强B类信号...',
+  '四模型评分（蓄势/主升/龙回头/连板），分类排序...',
 ];
 
 // ── Board prefixes ──
@@ -915,6 +918,161 @@ function scoreDragonReturn(stock, kline, indexChangePct) {
   };
 }
 
+// ── D类·连板追踪: 实时连板+4连板潜力预判 ──
+function countCurrentConsecutiveLimitUps(closes, limitPct) {
+  const threshold = limitPct * 0.98;
+  let count = 0;
+  for (let i = closes.length - 1; i >= 1; i--) {
+    const chg = (closes[i] - closes[i-1]) / closes[i-1] * 100;
+    if (chg >= threshold) count++;
+    else break;
+  }
+  return count;
+}
+
+function scoreActiveLianban(stock, kline, indexChangePct) {
+  const closes = kline.map(k=>k.close);
+  const volumes = kline.map(k=>k.volume);
+  const highs = kline.map(k=>k.high);
+  const lows = kline.map(k=>k.low);
+  const n = closes.length;
+  const code = stock.code;
+  const limit = getLimitPct(code);
+
+  if (n < 20) return { score: 0, category: 'D' };
+
+  const count = countCurrentConsecutiveLimitUps(closes, limit);
+  if (count < 1) return { score: 0, category: 'D' };
+
+  const stockChg = stock.change_pct;
+  const idxChg = indexChangePct || 0;
+  const alpha = stockChg - idxChg;
+  const turnover = stock.turnover_rate || 0;
+  const vr = calcVolRatio(kline);
+
+  // 量能加速度
+  const vol5 = volumes.slice(-5).reduce((a,b)=>a+b,0) / 5;
+  const vol20 = volumes.slice(-20).reduce((a,b)=>a+b,0) / 20;
+  const volAccel = vol20 > 0 ? vol5 / vol20 : 1;
+
+  // 历史最大连板
+  const histMaxLU = hasHistorical4LimitUps(closes, limit, n);
+
+  let total = 0;
+
+  // ① 当前连板天数 (25分)
+  if (count >= 3) total += 25;
+  else if (count === 2) total += 15;
+  else if (count === 1) total += 5;
+
+  // ② 封板质量 (20分): 量比适中(1.5-3)=好, 换手2-6%=控盘好
+  let sealScore = 0;
+  if (vr >= 1.5 && vr <= 3) sealScore += 10;
+  else if (vr >= 1.2 && vr <= 4) sealScore += 6;
+  else if (vr > 4) sealScore += 3; // 太大=分歧大
+  else sealScore += 2;
+
+  if (turnover >= 2 && turnover <= 6) sealScore += 10;
+  else if (turnover >= 1.5 && turnover <= 8) sealScore += 7;
+  else if (turnover >= 1 && turnover <= 10) sealScore += 4;
+  else sealScore += 1;
+
+  total += Math.min(sealScore, 20);
+
+  // ③ 连板基因 (20分): 历史最大连板高度
+  if (histMaxLU >= 7) total += 20;
+  else if (histMaxLU >= 6) total += 16;
+  else if (histMaxLU >= 5) total += 12;
+  else if (histMaxLU >= 4) total += 8;
+  else if (histMaxLU >= 3) total += 4;
+  else total += 1;
+
+  // ④ 量能配合 (15分): 量能加速度volAccel
+  if (volAccel >= 1.3) total += 15;
+  else if (volAccel >= 1.0) total += 10;
+  else total += 5;
+
+  // ⑤ 逆势强度 (20分): 大盘弱时连板更值钱
+  if (idxChg < -0.5 && stockChg >= limit * 0.95) total += 20;
+  else if (idxChg < -0.3 && stockChg >= limit * 0.95) total += 18;
+  else if (idxChg < 0 && stockChg >= limit * 0.95) total += 16;
+  else if (idxChg < 0 && stockChg >= 5) total += 13;
+  else if (alpha >= 5) total += 10;
+  else if (alpha >= 3) total += 7;
+  else if (alpha >= 1) total += 4;
+  else total += 1;
+
+  // 阶段标签
+  let stage = '';
+  if (count === 1) stage = '首板';
+  else if (count === 2) stage = '二板';
+  else if (count === 3) stage = '三板';
+  else stage = '四板+';
+
+  // 4连板潜力预判
+  let potential = '低';
+  if (histMaxLU >= 5 && count >= 2 && volAccel >= 1.0) potential = '高';
+  else if (histMaxLU >= 4 && count >= 2) potential = '中';
+  else if (histMaxLU >= 5 && count >= 1) potential = '中';
+  else if (histMaxLU >= 4) potential = '低';
+
+  // 操作建议
+  let postAdvice = '';
+  if (count === 2 && potential === '高') postAdvice = '二板确认，关注三板晋级';
+  else if (count === 3 && potential === '高') postAdvice = '三板关键位，四板预期强烈';
+  else if (count === 1 && potential === '高') postAdvice = '首板启动，有4板基因';
+  else if (potential === '低') postAdvice = '连板中但持续性存疑，谨慎追高';
+  else postAdvice = '连板进行中，关注量能持续性';
+
+  const minScoreD = 20;
+  if (total < minScoreD) return { score: 0, category: 'D' };
+
+  return {
+    score: Math.min(Math.round(total * 10) / 10, 100),
+    category: 'D',
+    current_lianban: count,
+    lianban_stage: stage,
+    hist_max_lu: histMaxLU,
+    vol_ratio: Math.round(vr * 100) / 100,
+    vol_accel: Math.round(volAccel * 100) / 100,
+    turnover: turnover,
+    alpha: Math.round(alpha * 10) / 10,
+    four_board_potential: potential,
+    post_advice: postAdvice,
+  };
+}
+
+// ── 底部止跌K检测（增强B类）──
+function detectStopDeclineK(kline) {
+  const result = { found: false, stopKIndex: -1, stopKHigh: 0, confirmed: false };
+  const lookback = Math.min(20, kline.length - 1);
+  if (lookback < 5) return result;
+
+  const start = kline.length - lookback;
+
+  // 找连续3天创新低: 每天最低价 < 前一天最低价
+  for (let i = start + 3; i < kline.length; i++) {
+    if (kline[i].low < kline[i-1].low &&
+        kline[i-1].low < kline[i-2].low &&
+        kline[i-2].low < kline[i-3].low) {
+      // 连续3天创新低(i-2, i-1, i)，找止跌K
+      for (let j = i + 1; j < kline.length; j++) {
+        if (kline[j].low > kline[j-1].low) {
+          // 止跌K = 第一个不再创新低的天
+          result.found = true;
+          result.stopKIndex = j;
+          result.stopKHigh = kline[j].high;
+          // 确认信号: 当前价格突破止跌K的最高价
+          const curPrice = kline[kline.length - 1].close;
+          result.confirmed = curPrice > kline[j].high;
+          return result;
+        }
+      }
+    }
+  }
+  return result;
+}
+
 // ── Main screening flow ──
 async function startScreen() {
   if (isLoading) return;
@@ -969,21 +1127,33 @@ async function startScreen() {
       const kline = klineData[stock.code];
       if (!kline || kline.length < 40) continue;
 
-      // Score all three categories
+      // Score all four categories
       const scoreA = scoreBottomReversal(stock, kline, limitUpGene);
       const scoreB = scoreMainWave(stock, kline, 0);
       const scoreC = scoreDragonReturn(stock, kline, idxChg);
+      const scoreD = scoreActiveLianban(stock, kline, idxChg);
+
+      // 底部止跌K检测增强B类: 如果确认信号, B类最多加10分
+      const stopK = detectStopDeclineK(kline);
+      if (stopK.found && stopK.confirmed && scoreB.score > 0) {
+        const bonus = Math.min(10, 10);
+        scoreB.score += bonus;
+        scoreB.stop_k_confirmed = true;
+      }
 
       // Minimum thresholds
-      const minScoreA = 12, minScoreB = 15, minScoreC = 30;
+      const minScoreA = 12, minScoreB = 15, minScoreC = 30, minScoreD = 20;
       const passA = scoreA.score >= minScoreA;
       const passB = scoreB.score >= minScoreB;
       const passC = scoreC.score >= minScoreC;
-      if (!passA && !passB && !passC) continue;
+      const passD = scoreD.score >= minScoreD;
+      if (!passA && !passB && !passC && !passD) continue;
 
-      // Pick the best category (C gets priority if it passes, as it's the most specific signal)
+      // Pick the best category (优先级: D > C > A > B)
       let best;
-      if (passC && scoreC.score >= scoreA.score && scoreC.score >= scoreB.score) {
+      if (passD) {
+        best = scoreD;
+      } else if (passC && (!passA || scoreC.score >= scoreA.score) && (!passB || scoreC.score >= scoreB.score)) {
         best = scoreC;
       } else if (passA && passB) {
         best = scoreA.score >= scoreB.score - 5 ? scoreA : scoreB;
@@ -992,11 +1162,11 @@ async function startScreen() {
       } else if (passB) {
         best = scoreB;
       } else {
-        best = scoreC;
+        best = scoreD;
       }
 
       // Limit-up gene: add bonus score instead of hard filter (only for A/B)
-      if (limitUpGene && best.category !== 'C') {
+      if (limitUpGene && best.category !== 'C' && best.category !== 'D') {
         const maxLU = maxConsecutiveLimitUps(kline.map(k=>k.close), getLimitPct(stock.code));
         if (maxLU >= 2) { best.score += 5; best.metrics.limitUpBonus = 5; }
         else if (maxLU >= 1) { best.score += 3; best.metrics.limitUpBonus = 3; }
@@ -1019,6 +1189,7 @@ async function startScreen() {
     const aCount = results.filter(r => r.category === 'A').length;
     const bCount = results.filter(r => r.category === 'B').length;
     const cCount = results.filter(r => r.category === 'C').length;
+    const dCount = results.filter(r => r.category === 'D').length;
 
     // Render
     renderResults(top10, {
@@ -1028,6 +1199,7 @@ async function startScreen() {
       a_count: aCount,
       b_count: bCount,
       c_count: cCount,
+      d_count: dCount,
       index_change: idxChg,
     }, dataDate);
 
@@ -1050,22 +1222,28 @@ function renderResults(results, stats, date) {
   document.getElementById('statsBar').innerHTML = `
     <div class="stat-item"><div class="stat-value">${stats.total}</div><div class="stat-label">全市场扫描</div></div>
     <div class="stat-item"><div class="stat-value">${stats.scored}</div><div class="stat-label">有效评分</div></div>
+    <div class="stat-item"><div class="stat-value" style="color:#3b82f6">${stats.d_count}</div><div class="stat-label">D类 · 连板追踪</div></div>
+    <div class="stat-item"><div class="stat-value" style="color:#a855f7">${stats.c_count}</div><div class="stat-label">C类 · 龙回头</div></div>
     <div class="stat-item"><div class="stat-value">${stats.a_count}</div><div class="stat-label">A类 · 蓄势待发</div></div>
     <div class="stat-item"><div class="stat-value">${stats.b_count}</div><div class="stat-label">B类 · 主升浪中</div></div>
-    <div class="stat-item"><div class="stat-value" style="color:#a855f7">${stats.c_count}</div><div class="stat-label">C类 · 龙回头</div></div>
   `;
 
   // Cards
   const container = document.getElementById('resultsContainer');
   container.innerHTML = '';
 
-  // A section
+  // Rendering order: D > C > A > B
+  const dResults = results.filter(r => r.category === 'D');
+  const cResults = results.filter(r => r.category === 'C');
   const aResults = results.filter(r => r.category === 'A');
   const bResults = results.filter(r => r.category === 'B');
-  const cResults = results.filter(r => r.category === 'C');
 
+  if (dResults.length) {
+    container.innerHTML += `<div class="section-title"><span class="badge badge-d">D类</span> 连板追踪 · 四板潜力预判</div>`;
+    dResults.forEach(r => container.innerHTML += renderCard(r));
+  }
   if (cResults.length) {
-    container.innerHTML += `<div class="section-title"><span class="badge badge-c">C类</span> 龙回头 · 首板六要素</div>`;
+    container.innerHTML += `<div class="section-title" style="margin-top:24px"><span class="badge badge-c">C类</span> 龙回头 · 首板六要素</div>`;
     cResults.forEach(r => container.innerHTML += renderCard(r));
   }
   if (aResults.length) {
@@ -1094,9 +1272,9 @@ function renderCard(stock) {
   const isUp = stock.change_pct >= 0;
   const changeClass = isUp ? 'up' : 'down';
   const changeSign = isUp ? '+' : '';
-  const catClass = stock.category === 'A' ? 'cat-a' : stock.category === 'B' ? 'cat-b' : 'cat-c';
-  const catLabel = stock.category === 'A' ? 'A·蓄势' : stock.category === 'B' ? 'B·主升' : 'C·龙回头';
-  const barColor = stock.category === 'A' ? '#22c55e' : stock.category === 'B' ? '#ef4444' : '#a855f7';
+  const catClass = stock.category === 'A' ? 'cat-a' : stock.category === 'B' ? 'cat-b' : stock.category === 'C' ? 'cat-c' : 'cat-d';
+  const catLabel = stock.category === 'A' ? 'A·蓄势' : stock.category === 'B' ? 'B·主升' : stock.category === 'C' ? 'C·龙回头' : 'D·连板';
+  const barColor = stock.category === 'A' ? '#22c55e' : stock.category === 'B' ? '#ef4444' : stock.category === 'C' ? '#a855f7' : '#3b82f6';
 
   let metricsHTML = '';
   if (stock.category === 'A') {
@@ -1112,6 +1290,16 @@ function renderCard(stock) {
       <div class="metric"><div class="metric-label">量比</div><div class="metric-value">${stock.metrics.vol_ratio || '-'}</div></div>
       <div class="metric"><div class="metric-label">5日涨幅</div><div class="metric-value" style="color:${stock.metrics.gain_5d >= 0 ? 'var(--stock-up)' : 'var(--stock-down)'}">${stock.metrics.gain_5d >= 0 ? '+' : ''}${stock.metrics.gain_5d || 0}%</div></div>
       <div class="metric"><div class="metric-label">RSI</div><div class="metric-value">${stock.metrics.rsi || '-'}</div></div>
+    `;
+  } else if (stock.category === 'D') {
+    // D类·连板追踪: 连板指标展示
+    const potentialColor = stock.metrics.four_board_potential === '高' ? '#ef4444' : stock.metrics.four_board_potential === '中' ? '#f59e0b' : 'var(--muted-foreground)';
+    metricsHTML = `
+      <div class="metric"><div class="metric-label">当前连板</div><div class="metric-value">${stock.metrics.current_lianban || 0}板 / ${stock.metrics.lianban_stage || '-'}</div></div>
+      <div class="metric"><div class="metric-label">历史最大连板</div><div class="metric-value">${stock.metrics.hist_max_lu || 0}板</div></div>
+      <div class="metric"><div class="metric-label">量比/量能加速</div><div class="metric-value">${stock.metrics.vol_ratio || '-'} / ${stock.metrics.vol_accel || '-'}x</div></div>
+      <div class="metric"><div class="metric-label">换手率</div><div class="metric-value">${stock.metrics.turnover || 0}%</div></div>
+      <div class="metric"><div class="metric-label">4连板潜力</div><div class="metric-value" style="color:${potentialColor}">${stock.metrics.four_board_potential || '-'}</div></div>
     `;
   } else {
     // C类·龙回头: 六要素指标展示
@@ -1141,6 +1329,8 @@ function renderCard(stock) {
       <div class="kline-chart" data-code="${stock.code}"><canvas></canvas></div>
       <div class="metrics-grid">${metricsHTML}</div>
       ${stock.category === 'C' && stock.metrics.post_advice ? `<div style="font-size:12px;color:#a855f7;margin-bottom:8px;padding:6px 10px;background:rgba(168,85,247,0.08);border-radius:6px;border:1px solid rgba(168,85,247,0.2)">💡 ${stock.metrics.post_advice}</div>` : ''}
+      ${stock.category === 'D' && stock.metrics.post_advice ? `<div style="font-size:12px;color:#3b82f6;margin-bottom:8px;padding:6px 10px;background:rgba(59,130,246,0.08);border-radius:6px;border:1px solid rgba(59,130,246,0.2)">💡 ${stock.metrics.post_advice}</div>` : ''}
+      ${stock.category === 'B' && stock.metrics.stop_k_confirmed ? `<div style="font-size:12px;color:#f59e0b;margin-bottom:8px;padding:6px 10px;background:rgba(245,158,11,0.08);border-radius:6px;border:1px solid rgba(245,158,11,0.2)">💡 底部止跌K确认信号，突破止损K高点</div>` : ''}
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:12px;color:var(--muted-foreground)">综合评分</span>
         <span style="font-size:16px;font-weight:700;color:${barColor}">${stock.score}</span>
