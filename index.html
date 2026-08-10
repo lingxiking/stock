@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v7.2 · 四模型量化引擎</p>
+  <p>灵犀King · AI主升 v7.3 · 四模型量化引擎 · 腾讯K线主力</p>
 </footer>
 
 <script>
@@ -390,70 +390,58 @@ async function fetchKline(code, market, days=60) {
   const fetchDays = Math.max(days + 20, 80);
   const prefix = market === 1 ? 'sh' : 'sz';
   const symbol = `${prefix}${code}`;
-  const cbVar = `_sinaKline_${symbol}`;
 
-  // ── Source 1: Sina Finance JSONP API (browser-friendly, no CORS issues) ──
+  // ── Source 1: Tencent Finance API (browser-verified working) ──
+  for (let retry = 0; retry < 2; retry++) {
+    try {
+      const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${fetchDays},qfq`;
+      const resp = await fetch(url, { cache: 'no-cache' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.data) {
+          const stockData = data.data[symbol];
+          if (stockData) {
+            const klines = stockData.qfqday || stockData.day || [];
+            if (klines.length > 0) {
+              return klines.slice(-days).map(line => ({
+                time: line[0], open: +line[1], close: +line[2],
+                high: +line[3], low: +line[4], volume: +line[5],
+              }));
+            }
+          }
+        }
+      }
+    } catch(e) {
+      if (retry === 0) await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  // ── Source 2: Sina Finance JSONP (fallback) ──
   try {
+    const cbVar = `_sinaKline_${symbol}`;
     const result = await new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error('Sina JSONP timeout'));
-      }, 10000);
-      function cleanup() {
-        clearTimeout(timeout);
-        try { delete window[cbVar]; } catch(e) {}
-        if (script.parentNode) script.parentNode.removeChild(script);
-      }
+      const timeout = setTimeout(() => { cleanup(); reject(new Error('Sina timeout')); }, 8000);
+      function cleanup() { clearTimeout(timeout); try { delete window[cbVar]; } catch(e) {} if (script.parentNode) script.parentNode.removeChild(script); }
       window[cbVar] = function(data) {
         cleanup();
         if (data && Array.isArray(data) && data.length > 0 && data[0].day) {
-          resolve(data.slice(-days).map(d => ({
-            time: d.day, open: +d.open, close: +d.close,
-            high: +d.high, low: +d.low, volume: +d.volume,
-          })));
-        } else {
-          reject(new Error('Sina returned empty'));
-        }
+          resolve(data.slice(-days).map(d => ({ time: d.day, open: +d.open, close: +d.close, high: +d.high, low: +d.low, volume: +d.volume })));
+        } else { reject(new Error('Sina empty')); }
       };
-      script.onerror = () => { cleanup(); reject(new Error('Sina script error')); };
-      // NOTE: Use function-call format "cbVar(" not "var cbVar=" so Sina response calls our callback
+      script.onerror = () => { cleanup(); reject(new Error('Sina error')); };
       script.src = `https://quotes.sina.cn/cn/api/jsonp.php/${cbVar}(/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=${fetchDays}&_=${Date.now()}`;
       document.head.appendChild(script);
     });
     return result;
-  } catch(e) {
-    // Sina failed, try Tencent fallback
-  }
-
-  // ── Source 2: Tencent Finance API (fallback) ──
-  try {
-    const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${fetchDays},qfq`;
-    const resp = await fetch(url, { cache: 'no-cache' });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.data) {
-        const stockData = data.data[symbol];
-        if (stockData) {
-          const klines = stockData.qfqday || stockData.day || [];
-          if (klines.length > 0) {
-            return klines.slice(-days).map(line => ({
-              time: line[0], open: +line[1], close: +line[2],
-              high: +line[3], low: +line[4], volume: +line[5],
-            }));
-          }
-        }
-      }
-    }
-  } catch(e) { /* Tencent also failed */ }
+  } catch(e) { /* Sina also failed */ }
 
   return [];
 }
-
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
   // Sina JSONP can handle higher concurrency
-  const CONCURRENCY = 8;
+  const CONCURRENCY = 2; // conservative for Tencent rate limit
   for (let i = 0; i < stocks.length; i += CONCURRENCY) {
     const batch = stocks.slice(i, i + CONCURRENCY);
     const promises = batch.map(async s => {
@@ -464,7 +452,7 @@ async function fetchKlinesBatch(stocks, days=60) {
     });
     await Promise.all(promises);
     if (i + CONCURRENCY < stocks.length) {
-      await new Promise(r => setTimeout(r, 200)); // rate limit: 200ms between batches
+      await new Promise(r => setTimeout(r, 800)); // conservative: 800ms between batches for Tencent
     }
   }
   return results;
