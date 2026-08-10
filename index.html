@@ -405,6 +405,35 @@ async function fetchKline(code, market, days=60) {
   const fetchDays = Math.max(days + 20, 80);
   const prefix = market === 1 ? 'sh' : 'sz';
   const symbol = `${prefix}${code}`;
+
+  // Primary: Sina JSONP via script tag (CORS-proof)
+  try {
+    const cbVar = `_sk_${symbol}_${Date.now()}`;
+    const klines = await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const timer = setTimeout(() => { cleanup(); reject('sina timeout'); }, 4000);
+      function cleanup() {
+        clearTimeout(timer);
+        try { delete window[cbVar]; } catch(e) {}
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+      window[cbVar] = function(resp) {
+        cleanup();
+        if (Array.isArray(resp) && resp.length > 0 && resp[0].day) {
+          resolve(resp.map(d => ({
+            time: d.day, open: +d.open, close: +d.close,
+            high: +d.high, low: +d.low, volume: +d.volume,
+          })));
+        } else { reject('sina empty'); }
+      };
+      script.onerror = () => { cleanup(); reject('sina error'); };
+      script.src = `https://quotes.sina.cn/cn/api/jsonp.php/${cbVar}(/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=${fetchDays}&_=${Date.now()}`;
+      document.head.appendChild(script);
+    });
+    if (klines.length >= 10) return klines.slice(-days);
+  } catch(e) { /* Sina failed, try Tencent */ }
+
+  // Fallback: Tencent fetch
   try {
     const resp = await fetch(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${fetchDays},qfq`, { cache: 'no-store' });
     if (resp.ok) {
@@ -412,15 +441,14 @@ async function fetchKline(code, market, days=60) {
       const stockData = data?.data?.[symbol];
       if (stockData) {
         const klines = stockData.qfqday || stockData.day || [];
-        if (klines.length > 0) {
-          return klines.slice(-days).map(line => ({
-            time: line[0], open: +line[1], close: +line[2],
-            high: +line[3], low: +line[4], volume: +line[5],
-          }));
-        }
+        if (klines.length > 0) return klines.slice(-days).map(line => ({
+          time: line[0], open: +line[1], close: +line[2],
+          high: +line[3], low: +line[4], volume: +line[5],
+        }));
       }
     }
   } catch(e) { /* fail */ }
+
   return [];
 }
 async function fetchKlinesBatch(stocks, days=60) {
@@ -428,8 +456,8 @@ async function fetchKlinesBatch(stocks, days=60) {
   const active = stocks.filter(s => s.change_pct >= -3 && s.amount >= 100);
   console.log(`K-line pre-filter: ${stocks.length} -> ${active.length}`);
 
-  const CONC = 12;
-  const IV = 80;
+  const CONC = 6;
+  const IV = 100;
   let okCount = 0;
   for (let i = 0; i < active.length; i += CONC) {
     const batch = active.slice(i, i + CONC);
