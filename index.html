@@ -393,6 +393,7 @@ async function fetchKline(code, market, days=60) {
     if (data && data.data) {
       const key = `${prefix}${code}`;
       const stockData = data.data[key];
+      if (!stockData) return [];
       // Try qfqday (forward-adjusted) first, then day
       const klines = stockData.qfqday || stockData.day || [];
       // Take the last `days` entries
