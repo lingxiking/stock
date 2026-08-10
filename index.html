@@ -292,90 +292,80 @@ function setCTALoading(loading) {
 
 // ── Data fetching via EastMoney API ──
 async function fetchAllStocks() {
-  // Use EastMoney API to get all A-share stocks
-  const prefixes = [];
-  for (const b of selectedBoards) {
-    prefixes.push(...BOARD_PREFIXES[b]);
+  // Fetch stocks via EastMoney API with separate calls per market segment
+  const marketSegments = [
+    { fs: 'm:0+t:6', name: '深圳主板' },    // Shenzhen main board
+    { fs: 'm:1+t:2', name: '上海主板' },    // Shanghai main board
+    { fs: 'm:0+t:80', name: '创业板' },     // ChiNext
+    { fs: 'm:1+t:23', name: '科创板' },     // STAR
+  ];
+
+  // Filter segments based on selected boards
+  const segmentsToFetch = [];
+  for (const seg of marketSegments) {
+    if (seg.name === '深圳主板' || seg.name === '上海主板') {
+      if (selectedBoards.includes('main')) segmentsToFetch.push(seg);
+    } else if (seg.name === '创业板') {
+      if (selectedBoards.includes('gem')) segmentsToFetch.push(seg);
+    } else if (seg.name === '科创板') {
+      if (selectedBoards.includes('star')) segmentsToFetch.push(seg);
+    }
   }
 
   let allStocks = [];
   let apiTotal = 0, apiRawCount = 0, prefixFiltered = 0, amountFiltered = 0, stFiltered = 0;
 
-  // Fetch in batches by market
-  // Shanghai: 1.600xxx, 1.601xxx, 1.603xxx, 1.605xxx, 1.688xxx, 1.689xxx
-  // Shenzhen: 0.000xxx, 0.001xxx, 0.002xxx, 0.003xxx, 0.300xxx, 0.301xxx
+  for (const seg of segmentsToFetch) {
+    const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=${seg.fs}&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
+    try {
+      const resp = await fetch(url, { cache: 'no-cache' });
+      const data = await resp.json();
+      const segTotal = (data && data.data && data.data.total) || 0;
+      const segRaw = (data && data.data && data.data.diff) ? data.data.diff.length : 0;
+      apiTotal += segTotal;
+      apiRawCount += segRaw;
+      console.log(`${seg.name}: total=${segTotal}, returned=${segRaw}`);
+      if (data && data.data && data.data.diff) {
+        for (const item of data.data.diff) {
+          const code = String(item.f12);
+          const market = item.f13;
+          const prefix = code.substring(0,3);
+          const name = item.f14;
+          const price = item.f2;
+          const changePct = item.f3;
+          const volume = item.f5;
+          const amount = item.f6;
+          const high = item.f15;
+          const low = item.f16;
+          const open = item.f17;
+          const prevClose = item.f18;
+          const turnover = item.f8;
 
-  const fsParams = [];
-  if (selectedBoards.includes('main')) {
-    fsParams.push('m:1+t:2,m:1+t:23'); // Shanghai main board
-    fsParams.push('m:0+t:6,m:0+t:13,m:0+t:80'); // Shenzhen main board
-  }
-  if (selectedBoards.includes('gem')) {
-    fsParams.push('m:0+t:80'); // ChiNext (创业板) - already included above
-  }
-  if (selectedBoards.includes('star')) {
-    fsParams.push('m:1+t:23'); // STAR (科创板)
-  }
-
-  // Get all A-shares: Shenzhen + Shanghai, main + gem + star
-  // fs codes: m:0+t:6=深圳A股, m:0+t:13=深圳创业板, m:0+t:80=深圳其他, m:1+t:2=上海A股, m:1+t:23=上海科创板
-  let fs = '';
-  if (selectedBoards.includes('main')) fs += 'm:0+t:6,m:0+t:13,m:1+t:2,';
-  if (selectedBoards.includes('gem')) fs += 'm:0+t:80,';
-  if (selectedBoards.includes('star')) fs += 'm:1+t:23,';
-  fs = fs.slice(0, -1); // remove trailing comma
-  if (!fs) fs = 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23'; // fallback: all
-
-  // Fetch all stocks (up to 5000 per page)
-  const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=${fs}&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
-
-  try {
-    const resp = await fetch(url);
-    const data = await resp.json();
-    apiTotal = (data && data.data && data.data.total) || 0;
-    apiRawCount = (data && data.data && data.data.diff) ? data.data.diff.length : 0;
-    if (data && data.data && data.data.diff) {
-      for (const item of data.data.diff) {
-        const code = String(item.f12);
-        const market = item.f13; // 0=Shenzhen, 1=Shanghai
-        const prefix = code.substring(0,3);
-
-        // Check if matches selected boards
-        let match = false;
-        for (const b of selectedBoards) {
-          if (BOARD_PREFIXES[b].some(p => prefix.startsWith(p) || code.startsWith(p))) {
-            match = true; break;
+          // Basic validation
+          if (!price || price === '-' || !volume || volume <= 0) continue;
+          // Filter ST
+          if (name.includes('ST') || name.includes('st') || name.includes('*')) { stFiltered++; continue; }
+          // Filter low liquidity (< 500万)
+          if (amount < 5000000) { amountFiltered++; continue; }
+          // Filter by board prefix
+          let match = false;
+          for (const b of selectedBoards) {
+            if (BOARD_PREFIXES[b].some(p => prefix.startsWith(p) || code.startsWith(p))) {
+              match = true; break;
+            }
           }
+          if (!match) { prefixFiltered++; continue; }
+
+          allStocks.push({
+            code, name, market, price: +price, change_pct: +changePct,
+            volume: +volume, amount: +amount, high: +high, low: +low,
+            open: +open, prev_close: +prevClose, turnover_rate: +turnover || 0,
+          });
         }
-        if (!match) { prefixFiltered++; continue; }
-
-        const name = item.f14;
-        const price = item.f2;
-        const changePct = item.f3;
-        const volume = item.f5;
-        const amount = item.f6;
-        const high = item.f15;
-        const low = item.f16;
-        const open = item.f17;
-        const prevClose = item.f18;
-        const turnover = item.f8; // turnover rate
-
-        // Basic validation
-        if (!price || price === '-' || !volume || volume <= 0) continue;
-        // Filter ST
-        if (name.includes('ST') || name.includes('st') || name.includes('*')) { stFiltered++; continue; }
-        // Filter extremely low liquidity (< 500万, very lenient)
-        if (amount < 5000000) { amountFiltered++; continue; }
-
-        allStocks.push({
-          code, name, market, price: +price, change_pct: +changePct,
-          volume: +volume, amount: +amount, high: +high, low: +low,
-          open: +open, prev_close: +prevClose, turnover_rate: +turnover || 0,
-        });
       }
+    } catch(e) {
+      console.error(`Fetch ${seg.name} error:`, e);
     }
-  } catch(e) {
-    console.error('Fetch stocks error:', e);
   }
 
   window._apiTotal = apiTotal;
@@ -383,6 +373,7 @@ async function fetchAllStocks() {
   window._prefixFiltered = prefixFiltered;
   window._amountFiltered = amountFiltered;
   window._stFiltered = stFiltered;
+  console.log(`fetchAllStocks: total=${allStocks.length}`);
   return allStocks;
 }
 
