@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v6.0 · 四模型量化引擎</p>
+  <p>灵犀King · AI主升 v6.7 · 四模型量化引擎</p>
 </footer>
 
 <script>
@@ -316,15 +316,21 @@ async function fetchAllStocks() {
   let apiTotal = 0, apiRawCount = 0, prefixFiltered = 0, amountFiltered = 0, stFiltered = 0;
 
   for (const seg of segmentsToFetch) {
-    const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=${seg.fs}&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
-    try {
-      const resp = await fetch(url, { cache: 'no-cache' });
-      const data = await resp.json();
-      const segTotal = (data && data.data && data.data.total) || 0;
-      const segRaw = (data && data.data && data.data.diff) ? data.data.diff.length : 0;
-      apiTotal += segTotal;
-      apiRawCount += segRaw;
-      console.log(`${seg.name}: total=${segTotal}, returned=${segRaw}`);
+    const PAGE_SIZE = 200;
+    let segTotal = 0;
+    let page = 1;
+    let segRaw = 0;
+    // Paginate: API caps at ~200/page, fetch all pages
+    do {
+      const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=${PAGE_SIZE}&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=${seg.fs}&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
+      try {
+        const resp = await fetch(url, { cache: 'no-cache' });
+        const data = await resp.json();
+        segTotal = (data && data.data && data.data.total) || 0;
+        const pageRaw = (data && data.data && data.data.diff) ? data.data.diff.length : 0;
+        if (page === 1) { apiTotal += segTotal; }
+        apiRawCount += pageRaw;
+        console.log(`${seg.name} page${page}: total=${segTotal}, pageReturned=${pageRaw}`);
       if (data && data.data && data.data.diff) {
         for (const item of data.data.diff) {
           const code = String(item.f12);
@@ -363,9 +369,11 @@ async function fetchAllStocks() {
           });
         }
       }
-    } catch(e) {
-      console.error(`Fetch ${seg.name} error:`, e);
-    }
+      } catch(e) {
+        console.error(`Fetch ${seg.name} page${page} error:`, e);
+      }
+      page++;
+    } while (page * PAGE_SIZE < segTotal && page <= 25); // max 25 pages = 5000 stocks
   }
 
   window._apiTotal = apiTotal;
@@ -412,8 +420,8 @@ async function fetchKline(code, market, days=60) {
 
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
-  // Fetch in parallel with concurrency limit
-  const CONCURRENCY = 8;
+  // Fetch in parallel with reduced concurrency to avoid rate limiting
+  const CONCURRENCY = 3;
   for (let i = 0; i < stocks.length; i += CONCURRENCY) {
     const batch = stocks.slice(i, i + CONCURRENCY);
     const promises = batch.map(async s => {
@@ -424,7 +432,7 @@ async function fetchKlinesBatch(stocks, days=60) {
     });
     await Promise.all(promises);
     if (i + CONCURRENCY < stocks.length) {
-      await new Promise(r => setTimeout(r, 200)); // rate limit
+      await new Promise(r => setTimeout(r, 500)); // rate limit: 500ms between batches
     }
   }
   return results;
