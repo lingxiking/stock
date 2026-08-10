@@ -299,6 +299,7 @@ async function fetchAllStocks() {
   }
 
   let allStocks = [];
+  let apiTotal = 0, apiRawCount = 0, prefixFiltered = 0, amountFiltered = 0, stFiltered = 0;
 
   // Fetch in batches by market
   // Shanghai: 1.600xxx, 1.601xxx, 1.603xxx, 1.605xxx, 1.688xxx, 1.689xxx
@@ -331,6 +332,8 @@ async function fetchAllStocks() {
   try {
     const resp = await fetch(url);
     const data = await resp.json();
+    apiTotal = (data && data.data && data.data.total) || 0;
+    apiRawCount = (data && data.data && data.data.diff) ? data.data.diff.length : 0;
     if (data && data.data && data.data.diff) {
       for (const item of data.data.diff) {
         const code = String(item.f12);
@@ -344,7 +347,7 @@ async function fetchAllStocks() {
             match = true; break;
           }
         }
-        if (!match) continue;
+        if (!match) { prefixFiltered++; continue; }
 
         const name = item.f14;
         const price = item.f2;
@@ -360,9 +363,9 @@ async function fetchAllStocks() {
         // Basic validation
         if (!price || price === '-' || !volume || volume <= 0) continue;
         // Filter ST
-        if (name.includes('ST') || name.includes('st') || name.includes('*')) continue;
+        if (name.includes('ST') || name.includes('st') || name.includes('*')) { stFiltered++; continue; }
         // Filter extremely low liquidity (< 500万, very lenient)
-        if (amount < 5000000) continue;
+        if (amount < 5000000) { amountFiltered++; continue; }
 
         allStocks.push({
           code, name, market, price: +price, change_pct: +changePct,
@@ -375,6 +378,11 @@ async function fetchAllStocks() {
     console.error('Fetch stocks error:', e);
   }
 
+  window._apiTotal = apiTotal;
+  window._apiRawCount = apiRawCount;
+  window._prefixFiltered = prefixFiltered;
+  window._amountFiltered = amountFiltered;
+  window._stFiltered = stFiltered;
   return allStocks;
 }
 
@@ -456,6 +464,8 @@ async function fetchHotConcepts() {
     const resp = await fetch(url);
     const data = await resp.json();
     const concepts = [];
+    apiTotal = (data && data.data && data.data.total) || 0;
+    apiRawCount = (data && data.data && data.data.diff) ? data.data.diff.length : 0;
     if (data && data.data && data.data.diff) {
       for (const item of data.data.diff) {
         concepts.push({ code: item.f12, name: item.f14, change_pct: item.f3 });
@@ -1144,6 +1154,11 @@ async function startScreen() {
     // === DIAGNOSTIC ===
     const debugInfo = {
       totalFetched: allStocks.length,
+      apiTotal: window._apiTotal || 0,
+      apiRawCount: window._apiRawCount || 0,
+      prefixFiltered: window._prefixFiltered || 0,
+      amountFiltered: window._amountFiltered || 0,
+      stFiltered: window._stFiltered || 0,
       topCandidates: topCandidates.length,
       klineAvailable: Object.keys(klineData).length,
       klineLengthDist: {},
@@ -1260,7 +1275,10 @@ async function startScreen() {
     const maxD = debugInfo.scoreDDist.length ? Math.max(...debugInfo.scoreDDist).toFixed(1) : 'N/A';
     
     let debugHTML = `<b>🔍 诊断信息</b>\n`;
-    debugHTML += `API获取股票: ${debugInfo.totalFetched} 只\n`;
+    debugHTML += `API返回总数(total): ${debugInfo.apiTotal} 只\n`;
+    debugHTML += `API返回条数(diff): ${debugInfo.apiRawCount} 条\n`;
+    debugHTML += `前缀过滤: ${debugInfo.prefixFiltered} | ST过滤: ${debugInfo.stFiltered} | 成交额过滤: ${debugInfo.amountFiltered}\n`;
+    debugHTML += `通过所有过滤: ${debugInfo.totalFetched} 只\n`;
     debugHTML += `Top候选: ${debugInfo.topCandidates} 只\n`;
     debugHTML += `K线数据可用: ${debugInfo.klineAvailable} 只\n`;
     debugHTML += `通过K线筛选(≥10天): ${debugInfo.scoredStocks} 只\n`;
