@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v7.0 · 四模型量化引擎</p>
+  <p>灵犀King · AI主升 v7.1 · 四模型量化引擎</p>
 </footer>
 
 <script>
@@ -417,7 +417,8 @@ async function fetchKline(code, market, days=60) {
         }
       };
       script.onerror = () => { cleanup(); reject(new Error('Sina script error')); };
-      script.src = `https://quotes.sina.cn/cn/api/jsonp.php/var%20${cbVar}=/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=${fetchDays}&_=${Date.now()}`;
+      // NOTE: Use function-call format "cbVar(" not "var cbVar=" so Sina response calls our callback
+      script.src = `https://quotes.sina.cn/cn/api/jsonp.php/${cbVar}(/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=${fetchDays}&_=${Date.now()}`;
       document.head.appendChild(script);
     });
     return result;
