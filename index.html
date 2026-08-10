@@ -1339,7 +1339,18 @@ async function startScreen() {
 
     // Sort by score
     results.sort((a,b) => b.score - a.score);
-    const top10 = results.slice(0, 10);
+    // 每个分类各取 Top 10，确保各类别都能展示
+    const top10Set = new Set();
+    const top10 = [];
+    for (const cat of ['A', 'B', 'C', 'D']) {
+      const catResults = results.filter(r => r.category === cat).slice(0, 10);
+      catResults.forEach(r => {
+        if (!top10Set.has(r.code)) {
+          top10Set.add(r.code);
+          top10.push(r);
+        }
+      });
+    }
 
     // Stats
     const aCount = results.filter(r => r.category === 'A').length;
