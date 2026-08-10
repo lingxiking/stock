@@ -1116,59 +1116,88 @@ function detectStopDeclineK(kline) {
     confirmed: false, ma21Declining: false, ma21: 0,
     gapUpPct: 0, hasGapUp: false, signalTier: 0
   };
-  const lookback = Math.min(20, kline.length - 1);
-  if (lookback < 5) return result;
+  const len = kline.length;
+  if (len < 10) return result;
 
-  const start = kline.length - lookback;
+  const lookback = Math.min(25, len - 1);
+  const startIdx = len - lookback;
 
-  for (let i = start + 3; i < kline.length; i++) {
-    if (kline[i].low < kline[i-1].low &&
-        kline[i-1].low < kline[i-2].low &&
-        kline[i-2].low < kline[i-3].low) {
-      for (let j = i + 1; j < kline.length; j++) {
-        if (kline[j].low > kline[j-1].low) {
-          result.found = true;
-          result.stopKIndex = j;
-          result.stopKHigh = kline[j].high;
+  // 方法1: 找lookback窗口内最低点，检测是否已突破该日高点
+  let minLow = Infinity, minLowIdx = -1;
+  for (let i = startIdx; i < len; i++) {
+    if (kline[i].low < minLow) {
+      minLow = kline[i].low;
+      minLowIdx = i;
+    }
+  }
 
-          const curPrice = kline[kline.length - 1].close;
-          const confirmIdx = kline.length - 1;
-          result.confirmed = curPrice > kline[j].high;
+  let stopIdx = -1, stopHigh = 0;
 
-          if (result.confirmed) {
-            // ── MA21 趋势检测 ──
-            if (confirmIdx >= 21) {
-              const ma21Now = kline.slice(confirmIdx - 21, confirmIdx).reduce((s, k) => s + k.close, 0) / 21;
-              const ma21Prev = kline.slice(confirmIdx - 22, confirmIdx - 1).reduce((s, k) => s + k.close, 0) / 21;
-              result.ma21 = Math.round(ma21Now * 100) / 100;
-              result.ma21Declining = ma21Now < ma21Prev;
-            }
+  // 最低点不在最后一根（说明已经止跌回升）
+  if (minLowIdx >= 0 && minLowIdx < len - 1) {
+    stopIdx = minLowIdx;
+    stopHigh = kline[minLowIdx].high;
+  }
 
-            // ── 跳空缺口检测: 确认日开盘价 vs 前一日收盘 ──
-            if (confirmIdx > 0) {
-              const prevClose = kline[confirmIdx - 1].close;
-              const todayOpen = kline[confirmIdx].open;
-              if (prevClose > 0) {
-                const gapPct = ((todayOpen - prevClose) / prevClose * 100);
-                result.gapUpPct = Math.round(gapPct * 100) / 100;
-                result.hasGapUp = gapPct >= 3;
-              }
-            }
-
-            // ── 信号强度分级 ──
-            if (result.hasGapUp && !result.ma21Declining) {
-              result.signalTier = 3; // 🔥🔥🔥 最强
-            } else if (!result.ma21Declining) {
-              result.signalTier = 2; // 🔥🔥 回踩确认
-            } else {
-              result.signalTier = 1; // 🔥 基础信号
-            }
-          }
-          return result;
-        }
+  // 方法2: 如果方法1没找到，寻找止跌日（低点开始抬头的转折日）
+  if (stopIdx < 0) {
+    for (let i = startIdx + 1; i < len; i++) {
+      if (kline[i].low > kline[i-1].low) {
+        stopIdx = i;
+        stopHigh = kline[i].high;
+        break;
       }
     }
   }
+
+  if (stopIdx < 0) return result;
+
+  result.found = true;
+  result.stopKIndex = stopIdx;
+  result.stopKHigh = stopHigh;
+
+  const curPrice = kline[len - 1].close;
+  const confirmIdx = len - 1;
+  // 检查从stopIdx到当前，是否有任何一天的收盘价突破了stopK的高点
+  let broken = false;
+  for (let i = stopIdx; i < len; i++) {
+    if (kline[i].close > stopHigh) {
+      broken = true;
+      break;
+    }
+  }
+  result.confirmed = broken;
+
+  if (broken) {
+    // MA21 趋势检测
+    if (confirmIdx >= 21) {
+      const ma21Now = kline.slice(confirmIdx - 21, confirmIdx).reduce((s, k) => s + k.close, 0) / 21;
+      const ma21Prev = kline.slice(Math.max(0, confirmIdx - 22), confirmIdx - 1).reduce((s, k) => s + k.close, 0) / 21;
+      result.ma21 = Math.round(ma21Now * 100) / 100;
+      result.ma21Declining = ma21Now < ma21Prev;
+    }
+
+    // 跳空缺口检测: 确认日开盘价 vs 前一日收盘
+    if (confirmIdx > 0) {
+      const prevClose = kline[confirmIdx - 1].close;
+      const todayOpen = kline[confirmIdx].open;
+      if (prevClose > 0) {
+        const gapPct = ((todayOpen - prevClose) / prevClose * 100);
+        result.gapUpPct = Math.round(gapPct * 100) / 100;
+        result.hasGapUp = gapPct >= 3;
+      }
+    }
+
+    // 信号强度分级
+    if (result.hasGapUp && !result.ma21Declining) {
+      result.signalTier = 3;
+    } else if (!result.ma21Declining) {
+      result.signalTier = 2;
+    } else {
+      result.signalTier = 1;
+    }
+  }
+
   return result;
 }
 
