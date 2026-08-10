@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v6.7 · 四模型量化引擎</p>
+  <p>灵犀King · AI主升 v7.0 · 四模型量化引擎</p>
 </footer>
 
 <script>
@@ -388,39 +388,51 @@ async function fetchAllStocks() {
 // ── K-line data ──
 async function fetchKline(code, market, days=60) {
   const fetchDays = Math.max(days + 20, 80);
+  const prefix = market === 1 ? 'sh' : 'sz';
+  const symbol = `${prefix}${code}`;
+  const cbVar = `_sinaKline_${symbol}`;
 
-  // ── Source 1: East Money K-line API (same domain as stock list, CORS-friendly) ──
+  // ── Source 1: Sina Finance JSONP API (browser-friendly, no CORS issues) ──
   try {
-    const secid = `${market}.${code}`;
-    const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&beg=0&end=20500101&lmt=${fetchDays}`;
-    const resp = await fetch(url, { cache: 'no-cache' });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.data && data.data.klines) {
-        const klines = data.data.klines;
-        if (klines.length > 0) {
-          return klines.slice(-days).map(line => {
-            const parts = line.split(',');
-            return {
-              time: parts[0], open: +parts[1], close: +parts[2],
-              high: +parts[3], low: +parts[4], volume: +parts[5],
-            };
-          });
-        }
+    const result = await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Sina JSONP timeout'));
+      }, 10000);
+      function cleanup() {
+        clearTimeout(timeout);
+        try { delete window[cbVar]; } catch(e) {}
+        if (script.parentNode) script.parentNode.removeChild(script);
       }
-    }
-  } catch(e) { /* EM failed, try Tencent */ }
+      window[cbVar] = function(data) {
+        cleanup();
+        if (data && Array.isArray(data) && data.length > 0 && data[0].day) {
+          resolve(data.slice(-days).map(d => ({
+            time: d.day, open: +d.open, close: +d.close,
+            high: +d.high, low: +d.low, volume: +d.volume,
+          })));
+        } else {
+          reject(new Error('Sina returned empty'));
+        }
+      };
+      script.onerror = () => { cleanup(); reject(new Error('Sina script error')); };
+      script.src = `https://quotes.sina.cn/cn/api/jsonp.php/var%20${cbVar}=/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=${fetchDays}&_=${Date.now()}`;
+      document.head.appendChild(script);
+    });
+    return result;
+  } catch(e) {
+    // Sina failed, try Tencent fallback
+  }
 
-  // ── Source 2: Tencent Finance API (fallback) ─
+  // ── Source 2: Tencent Finance API (fallback) ──
   try {
-    const prefix = market === 1 ? 'sh' : 'sz';
-    const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${prefix}${code},day,,,${fetchDays},qfq`;
+    const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${fetchDays},qfq`;
     const resp = await fetch(url, { cache: 'no-cache' });
     if (resp.ok) {
       const data = await resp.json();
       if (data && data.data) {
-        const key = `${prefix}${code}`;
-        const stockData = data.data[key];
+        const stockData = data.data[symbol];
         if (stockData) {
           const klines = stockData.qfqday || stockData.day || [];
           if (klines.length > 0) {
@@ -439,8 +451,8 @@ async function fetchKline(code, market, days=60) {
 
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
-  // Fetch in parallel with reduced concurrency to avoid rate limiting
-  const CONCURRENCY = 3;
+  // Sina JSONP can handle higher concurrency
+  const CONCURRENCY = 8;
   for (let i = 0; i < stocks.length; i += CONCURRENCY) {
     const batch = stocks.slice(i, i + CONCURRENCY);
     const promises = batch.map(async s => {
@@ -451,7 +463,7 @@ async function fetchKlinesBatch(stocks, days=60) {
     });
     await Promise.all(promises);
     if (i + CONCURRENCY < stocks.length) {
-      await new Promise(r => setTimeout(r, 500)); // rate limit: 500ms between batches
+      await new Promise(r => setTimeout(r, 200)); // rate limit: 200ms between batches
     }
   }
   return results;
