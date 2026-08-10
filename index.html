@@ -381,32 +381,42 @@ async function fetchAllStocks() {
 // ── K-line data ──
 async function fetchKline(code, market, days=60) {
   const secid = `${market}.${code}`;
-  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&ut=b2884a393a59ad64002292a3e90d46a5&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=${days}`;
+  const urls = [
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&ut=b2884a393a59ad64002292a3e90d46a5&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=${days}`,
+    `http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&ut=b2884a393a59ad64002292a3e90d46a5&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=${days}`,
+  ];
 
-  try {
-    const resp = await fetch(url);
-    const data = await resp.json();
-    if (data && data.data && data.data.klines) {
-      return data.data.klines.map(line => {
-        const parts = line.split(',');
-        return {
-          time: parts[0],
-          open: +parts[1],
-          close: +parts[2],
-          high: +parts[3],
-          low: +parts[4],
-          volume: +parts[5],
-        };
-      });
+  for (const url of urls) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const resp = await fetch(url, { cache: 'no-cache' });
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        if (data && data.data && data.data.klines) {
+          return data.data.klines.map(line => {
+            const parts = line.split(',');
+            return {
+              time: parts[0],
+              open: +parts[1],
+              close: +parts[2],
+              high: +parts[3],
+              low: +parts[4],
+              volume: +parts[5],
+            };
+          });
+        }
+      } catch(e) {
+        if (attempt === 0) continue;
+      }
     }
-  } catch(e) { /* ignore */ }
+  }
   return [];
 }
 
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
   // Fetch in parallel with concurrency limit
-  const CONCURRENCY = 10;
+  const CONCURRENCY = 5;
   for (let i = 0; i < stocks.length; i += CONCURRENCY) {
     const batch = stocks.slice(i, i + CONCURRENCY);
     const promises = batch.map(async s => {
@@ -417,7 +427,7 @@ async function fetchKlinesBatch(stocks, days=60) {
     });
     await Promise.all(promises);
     if (i + CONCURRENCY < stocks.length) {
-      await new Promise(r => setTimeout(r, 100)); // rate limit
+      await new Promise(r => setTimeout(r, 200)); // rate limit
     }
   }
   return results;
@@ -1149,7 +1159,7 @@ async function startScreen() {
 
     for (const stock of topCandidates) {
       const kline = klineData[stock.code];
-      if (!kline || kline.length < 20) {
+      if (!kline || kline.length < 10) {
         if (kline) {
           const len = kline.length;
           debugInfo.klineLengthDist[len + 'bars'] = (debugInfo.klineLengthDist[len + 'bars'] || 0) + 1;
