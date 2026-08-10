@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>K线API测试</title>
+<style>
+body{font-family:-apple-system,sans-serif;background:#1a1a2e;color:#eee;padding:20px;font-size:14px;}
+.test-item{margin:10px 0;padding:12px;border-radius:8px;background:#16213e;}
+.pass{border-left:4px solid #2ecc71;} .fail{border-left:4px solid #e74c3c;} .wait{border-left:4px solid #f39c12;}
+h3{color:#d4a853;} pre{white-space:pre-wrap;word-break:break-all;font-size:12px;color:#aaa;margin:5px 0;}
+</style></head><body>
+<h2>🔍 K线API浏览器端测试</h2>
+<p>测试时间: <span id="time"></span></p>
+<div id="results"></div>
+<script>
+document.getElementById('time').textContent = new Date().toLocaleString();
+const R = document.getElementById('results');
+
+function addResult(name, status, detail) {
+  const d = document.createElement('div');
+  d.className = 'test-item ' + status;
+  d.innerHTML = '<b>' + name + '</b> ' + (status==='pass'?'✅':status==='fail'?'❌':'⏳') +
+    '<pre>' + detail + '</pre>';
+  R.appendChild(d);
+}
+
+// ── Test 1: 新浪 JSONP ──
+(async function testSina() {
+  const symbol = 'sh600519';
+  const cbVar = '_testSinaCb';
+  addResult('新浪JSONP', 'wait', '加载中...');
+  const el = R.lastChild;
+  
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const timeout = setTimeout(() => { cleanup(); reject(new Error('Timeout 10s')); }, 10000);
+      function cleanup() {
+        clearTimeout(timeout);
+        try { delete window[cbVar]; } catch(e){}
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+      window[cbVar] = function(d) { cleanup(); resolve(d); };
+      script.onerror = function() { cleanup(); reject(new Error('Script onerror')); };
+      script.src = 'https://quotes.sina.cn/cn/api/jsonp.php/' + cbVar + 
+        '(/CN_MarketDataService.getKLineData?symbol=' + symbol + '&scale=240&ma=no&datalen=5&_=' + Date.now();
+      console.log('[Test] Sina script src:', script.src);
+      document.head.appendChild(script);
+      console.log('[Test] Sina script appended, waiting...');
+    });
+    
+    if (data && Array.isArray(data) && data.length > 0) {
+      el.className = 'test-item pass';
+      el.innerHTML = '<b>新浪JSONP</b> ✅ 成功!<pre>数据条数: ' + data.length + 
+        '\n最新: ' + JSON.stringify(data[data.length-1], null, 2) + '</pre>';
+    } else {
+      el.className = 'test-item fail';
+      el.innerHTML = '<b>新浪JSONP</b> ❌ 返回空数据<pre>' + JSON.stringify(data) + '</pre>';
+    }
+  } catch(e) {
+    el.className = 'test-item fail';
+    el.innerHTML = '<b>新浪JSONP</b> ❌ 失败<pre>' + e.message + '\n\n检查Console获取更多细节</pre>';
+  }
+})();
+
+// ── Test 2: 腾讯 fetch ──
+(async function testTencent() {
+  addResult('腾讯API', 'wait', '加载中...');
+  const el = R.lastChild;
+  try {
+    const resp = await fetch('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,,,5,qfq', {cache:'no-cache'});
+    const data = await resp.json();
+    const klines = data?.data?.sh600519?.qfqday || data?.data?.sh600519?.day || [];
+    if (klines.length > 0) {
+      el.className = 'test-item pass';
+      el.innerHTML = '<b>腾讯API</b> ✅ 成功!<pre>数据条数: ' + klines.length + '\n最新: ' + klines[klines.length-1].join(',') + '</pre>';
+    } else {
+      el.className = 'test-item fail';
+      el.innerHTML = '<b>腾讯API</b> ❌ 无数据<pre>' + JSON.stringify(data).substring(0, 200) + '</pre>';
+    }
+  } catch(e) {
+    el.className = 'test-item fail';
+    el.innerHTML = '<b>腾讯API</b> ❌ 失败<pre>' + e.message + '</pre>';
+  }
+})();
+
+// ── Test 3: 东方财富 fetch ──
+(async function testEM() {
+  addResult('东方财富API', 'wait', '加载中...');
+  const el = R.lastChild;
+  try {
+    const resp = await fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600519&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&beg=0&end=20500101&lmt=5', {cache:'no-cache'});
+    const text = await resp.text();
+    if (text.length > 10) {
+      el.className = 'test-item pass';
+      el.innerHTML = '<b>东方财富API</b> ✅ 有响应<pre>长度: ' + text.length + '\n内容: ' + text.substring(0, 300) + '</pre>';
+    } else {
+      el.className = 'test-item fail';
+      el.innerHTML = '<b>东方财富API</b> ❌ 空响应<pre>HTTP ' + resp.status + ', 长度: ' + text.length + '</pre>';
+    }
+  } catch(e) {
+    el.className = 'test-item fail';
+    el.innerHTML = '<b>东方财富API</b> ❌ 失败<pre>' + e.message + '</pre>';
+  }
+})();
+</script></body></html>
