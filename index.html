@@ -315,8 +315,17 @@ async function fetchAllStocks() {
     fsParams.push('m:1+t:23'); // STAR (科创板)
   }
 
-  // Simpler approach: get all A-shares in one call
-  const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
+  // Get all A-shares: Shenzhen + Shanghai, main + gem + star
+  // fs codes: m:0+t:6=深圳A股, m:0+t:13=深圳创业板, m:0+t:80=深圳其他, m:1+t:2=上海A股, m:1+t:23=上海科创板
+  let fs = '';
+  if (selectedBoards.includes('main')) fs += 'm:0+t:6,m:0+t:13,m:1+t:2,';
+  if (selectedBoards.includes('gem')) fs += 'm:0+t:80,';
+  if (selectedBoards.includes('star')) fs += 'm:1+t:23,';
+  fs = fs.slice(0, -1); // remove trailing comma
+  if (!fs) fs = 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23'; // fallback: all
+
+  // Fetch all stocks (up to 5000 per page)
+  const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=${fs}&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
 
   try {
     const resp = await fetch(url);
@@ -351,8 +360,8 @@ async function fetchAllStocks() {
         if (!price || price === '-' || !volume || volume <= 0) continue;
         // Filter ST
         if (name.includes('ST') || name.includes('st') || name.includes('*')) continue;
-        // Filter low amount (< 5000万)
-        if (amount < 50000000) continue;
+        // Filter extremely low liquidity (< 500万, very lenient)
+        if (amount < 5000000) continue;
 
         allStocks.push({
           code, name, market, price: +price, change_pct: +changePct,
@@ -1024,7 +1033,7 @@ function scoreActiveLianban(stock, kline, indexChangePct) {
   else if (potential === '低') postAdvice = '连板中但持续性存疑，谨慎追高';
   else postAdvice = '连板进行中，关注量能持续性';
 
-  const minScoreD = 20;
+  const minScoreD = 15;
   if (total < minScoreD) return { score: 0, category: 'D' };
 
   return {
@@ -1125,7 +1134,7 @@ async function startScreen() {
 
     for (const stock of topCandidates) {
       const kline = klineData[stock.code];
-      if (!kline || kline.length < 40) continue;
+      if (!kline || kline.length < 20) continue;
 
       // Score all four categories
       const scoreA = scoreBottomReversal(stock, kline, limitUpGene);
