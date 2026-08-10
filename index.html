@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v7.9d · 四模型量化引擎 · 批量极速版</p>
+  <p>灵犀King · AI主升 v7.9e · 四模型量化引擎 · 批量极速版</p>
 </footer>
 
 <script>
@@ -988,12 +988,30 @@ function scoreActiveLianban(stock, kline, indexChangePct) {
   const code = stock.code;
   const limit = getLimitPct(code);
 
-  if (n < 20) return { score: 0, category: 'D' };
+  // Use real-time change_pct to detect today's limit-up (more reliable than K-line)
+  const stockChg = stock.change_pct;
+  const todayLimitUp = stockChg >= limit * 0.98;
 
-  const count = countCurrentConsecutiveLimitUps(closes, limit);
+  // If no K-line data but today is limit-up, use simplified scoring
+  if (n < 20) {
+    if (!todayLimitUp) return { score: 0, category: 'D' };
+    // Simplified: today is limit-up, score based on real-time data only
+    const idxChg = indexChangePct || 0;
+    const alpha = stockChg - idxChg;
+    const turnover = stock.turnover_rate || 0;
+    let total = 5; // base score for today's limit-up
+    if (alpha > 5) total += 10;
+    if (turnover >= 2 && turnover <= 8) total += 5;
+    if (stockChg >= limit * 0.99) total += 5; // strong seal
+    if (total >= 20) return { score: total, category: 'D', limit_up_days: 1, hist_max_consecutive_lu: 0 };
+    return { score: 0, category: 'D' };
+  }
+
+  const klineCount = countCurrentConsecutiveLimitUps(closes, limit);
+  // Combine K-line count with real-time: if today is limit-up per real-time but not in K-line, add 1
+  const count = todayLimitUp ? Math.max(klineCount, 1) : klineCount;
   if (count < 1) return { score: 0, category: 'D' };
 
-  const stockChg = stock.change_pct;
   const idxChg = indexChangePct || 0;
   const alpha = stockChg - idxChg;
   const turnover = stock.turnover_rate || 0;
