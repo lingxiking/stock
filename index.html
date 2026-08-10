@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v7.9e · 四模型量化引擎 · 批量极速版</p>
+  <p>灵犀King · AI主升 v7.9f · 四模型量化引擎 · 批量极速版</p>
 </footer>
 
 <script>
@@ -994,7 +994,7 @@ function scoreActiveLianban(stock, kline, indexChangePct) {
 
   // If no K-line data but today is limit-up, use simplified scoring
   if (n < 20) {
-    if (!todayLimitUp) return { score: 0, category: 'D' };
+    if (!todayLimitUp) return { score: 0, category: 'D', metrics: {} };
     // Simplified: today is limit-up, score based on real-time data only
     const idxChg = indexChangePct || 0;
     const alpha = stockChg - idxChg;
@@ -1003,14 +1003,14 @@ function scoreActiveLianban(stock, kline, indexChangePct) {
     if (alpha > 5) total += 10;
     if (turnover >= 2 && turnover <= 8) total += 5;
     if (stockChg >= limit * 0.99) total += 5; // strong seal
-    if (total >= 20) return { score: total, category: 'D', limit_up_days: 1, hist_max_consecutive_lu: 0 };
-    return { score: 0, category: 'D' };
+    if (total >= 20) return { score: total, category: 'D', limit_up_days: 1, hist_max_consecutive_lu: 0, metrics: { limit_up_days: 1 } };
+    return { score: 0, category: 'D', metrics: {} };
   }
 
   const klineCount = countCurrentConsecutiveLimitUps(closes, limit);
   // Combine K-line count with real-time: if today is limit-up per real-time but not in K-line, add 1
   const count = todayLimitUp ? Math.max(klineCount, 1) : klineCount;
-  if (count < 1) return { score: 0, category: 'D' };
+  if (count < 1) return { score: 0, category: 'D', metrics: {} };
 
   const idxChg = indexChangePct || 0;
   const alpha = stockChg - idxChg;
@@ -1092,7 +1092,7 @@ function scoreActiveLianban(stock, kline, indexChangePct) {
   else postAdvice = '连板进行中，关注量能持续性';
 
   const minScoreD = 15;
-  if (total < minScoreD) return { score: 0, category: 'D' };
+  if (total < minScoreD) return { score: 0, category: 'D', metrics: {} };
 
   return {
     score: Math.min(Math.round(total * 10) / 10, 100),
@@ -1273,10 +1273,10 @@ async function startScreen() {
       }
 
       // Limit-up gene: add bonus score instead of hard filter (only for A/B)
-      if (limitUpGene && best.category !== 'C' && best.category !== 'D') {
+      if (limitUpGene && best && best.category !== 'C' && best.category !== 'D') {
         const maxLU = maxConsecutiveLimitUps(kline.map(k=>k.close), getLimitPct(stock.code));
-        if (maxLU >= 2) { best.score += 5; best.metrics.limitUpBonus = 5; }
-        else if (maxLU >= 1) { best.score += 3; best.metrics.limitUpBonus = 3; }
+        if (maxLU >= 2) { best.score += 5; best.limitUpBonus = 5; }
+        else if (maxLU >= 1) { best.score += 3; best.limitUpBonus = 3; }
       }
 
       results.push({
