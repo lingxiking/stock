@@ -373,7 +373,7 @@ async function fetchAllStocks() {
         console.error(`Fetch ${seg.name} page${page} error:`, e);
       }
       page++;
-    } while (page * PAGE_SIZE < segTotal && page <= 25); // max 25 pages = 5000 stocks
+    } while (page * PAGE_SIZE < segTotal && page <= 30); // max 25 pages = 5000 stocks
   }
 
   window._apiTotal = apiTotal;
@@ -387,34 +387,53 @@ async function fetchAllStocks() {
 
 // ── K-line data ──
 async function fetchKline(code, market, days=60) {
-  // Use Tencent Finance API (more browser-friendly)
-  const prefix = market === 1 ? 'sh' : 'sz';
-  // Request extra days to ensure we get enough data
   const fetchDays = Math.max(days + 20, 80);
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${prefix}${code},day,,,${fetchDays},qfq`;
 
+  // ── Source 1: East Money K-line API (same domain as stock list, CORS-friendly) ──
   try {
+    const secid = `${market}.${code}`;
+    const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&beg=0&end=20500101&lmt=${fetchDays}`;
     const resp = await fetch(url, { cache: 'no-cache' });
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    if (data && data.data) {
-      const key = `${prefix}${code}`;
-      const stockData = data.data[key];
-      if (!stockData) return [];
-      // Try qfqday (forward-adjusted) first, then day
-      const klines = stockData.qfqday || stockData.day || [];
-      // Take the last `days` entries
-      const recent = klines.slice(-days);
-      return recent.map(line => ({
-        time: line[0],
-        open: +line[1],
-        close: +line[2],
-        high: +line[3],
-        low: +line[4],
-        volume: +line[5],
-      }));
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.data && data.data.klines) {
+        const klines = data.data.klines;
+        if (klines.length > 0) {
+          return klines.slice(-days).map(line => {
+            const parts = line.split(',');
+            return {
+              time: parts[0], open: +parts[1], close: +parts[2],
+              high: +parts[3], low: +parts[4], volume: +parts[5],
+            };
+          });
+        }
+      }
     }
-  } catch(e) { /* ignore */ }
+  } catch(e) { /* EM failed, try Tencent */ }
+
+  // ── Source 2: Tencent Finance API (fallback) ─
+  try {
+    const prefix = market === 1 ? 'sh' : 'sz';
+    const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${prefix}${code},day,,,${fetchDays},qfq`;
+    const resp = await fetch(url, { cache: 'no-cache' });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.data) {
+        const key = `${prefix}${code}`;
+        const stockData = data.data[key];
+        if (stockData) {
+          const klines = stockData.qfqday || stockData.day || [];
+          if (klines.length > 0) {
+            return klines.slice(-days).map(line => ({
+              time: line[0], open: +line[1], close: +line[2],
+              high: +line[3], low: +line[4], volume: +line[5],
+            }));
+          }
+        }
+      }
+    }
+  } catch(e) { /* Tencent also failed */ }
+
   return [];
 }
 
