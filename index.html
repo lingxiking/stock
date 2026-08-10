@@ -380,43 +380,40 @@ async function fetchAllStocks() {
 
 // ── K-line data ──
 async function fetchKline(code, market, days=60) {
-  const secid = `${market}.${code}`;
-  const urls = [
-    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&ut=b2884a393a59ad64002292a3e90d46a5&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=${days}`,
-    `http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&ut=b2884a393a59ad64002292a3e90d46a5&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=${days}`,
-  ];
+  // Use Tencent Finance API (more browser-friendly)
+  const prefix = market === 1 ? 'sh' : 'sz';
+  // Request extra days to ensure we get enough data
+  const fetchDays = Math.max(days + 20, 80);
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${prefix}${code},day,,,${fetchDays},qfq`;
 
-  for (const url of urls) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const resp = await fetch(url, { cache: 'no-cache' });
-        if (!resp.ok) continue;
-        const data = await resp.json();
-        if (data && data.data && data.data.klines) {
-          return data.data.klines.map(line => {
-            const parts = line.split(',');
-            return {
-              time: parts[0],
-              open: +parts[1],
-              close: +parts[2],
-              high: +parts[3],
-              low: +parts[4],
-              volume: +parts[5],
-            };
-          });
-        }
-      } catch(e) {
-        if (attempt === 0) continue;
-      }
+  try {
+    const resp = await fetch(url, { cache: 'no-cache' });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    if (data && data.data) {
+      const key = `${prefix}${code}`;
+      const stockData = data.data[key];
+      // Try qfqday (forward-adjusted) first, then day
+      const klines = stockData.qfqday || stockData.day || [];
+      // Take the last `days` entries
+      const recent = klines.slice(-days);
+      return recent.map(line => ({
+        time: line[0],
+        open: +line[1],
+        close: +line[2],
+        high: +line[3],
+        low: +line[4],
+        volume: +line[5],
+      }));
     }
-  }
+  } catch(e) { /* ignore */ }
   return [];
 }
 
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
   // Fetch in parallel with concurrency limit
-  const CONCURRENCY = 5;
+  const CONCURRENCY = 8;
   for (let i = 0; i < stocks.length; i += CONCURRENCY) {
     const batch = stocks.slice(i, i + CONCURRENCY);
     const promises = batch.map(async s => {
@@ -1265,9 +1262,9 @@ async function startScreen() {
     debugHTML += `API获取股票: ${debugInfo.totalFetched} 只\n`;
     debugHTML += `Top候选: ${debugInfo.topCandidates} 只\n`;
     debugHTML += `K线数据可用: ${debugInfo.klineAvailable} 只\n`;
-    debugHTML += `通过K线筛选(≥20天): ${debugInfo.scoredStocks} 只\n`;
+    debugHTML += `通过K线筛选(≥10天): ${debugInfo.scoredStocks} 只\n`;
     debugHTML += `通过评分阈值: ${debugInfo.passedStocks} 只\n`;
-    debugHTML += `\n<b>K线长度分布(不足20天的):</b> ${JSON.stringify(debugInfo.klineLengthDist)}\n`;
+    debugHTML += `\n<b>K线长度分布(不足10天的):</b> ${JSON.stringify(debugInfo.klineLengthDist)}\n`;
     debugHTML += `\n<b>评分统计 (平均/最高):</b>\n`;
     debugHTML += `  A类: 平均=${avgA} 最高=${maxA} (阈值≥12)\n`;
     debugHTML += `  B类: 平均=${avgB} 最高=${maxB} (阈值≥15)\n`;
