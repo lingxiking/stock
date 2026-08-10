@@ -1111,27 +1111,59 @@ function scoreActiveLianban(stock, kline, indexChangePct) {
 
 // ── 底部止跌K检测（增强B类）──
 function detectStopDeclineK(kline) {
-  const result = { found: false, stopKIndex: -1, stopKHigh: 0, confirmed: false };
+  const result = {
+    found: false, stopKIndex: -1, stopKHigh: 0,
+    confirmed: false, ma21Declining: false, ma21: 0,
+    gapUpPct: 0, hasGapUp: false, signalTier: 0
+  };
   const lookback = Math.min(20, kline.length - 1);
   if (lookback < 5) return result;
 
   const start = kline.length - lookback;
 
-  // 找连续3天创新低: 每天最低价 < 前一天最低价
   for (let i = start + 3; i < kline.length; i++) {
     if (kline[i].low < kline[i-1].low &&
         kline[i-1].low < kline[i-2].low &&
         kline[i-2].low < kline[i-3].low) {
-      // 连续3天创新低(i-2, i-1, i)，找止跌K
       for (let j = i + 1; j < kline.length; j++) {
         if (kline[j].low > kline[j-1].low) {
-          // 止跌K = 第一个不再创新低的天
           result.found = true;
           result.stopKIndex = j;
           result.stopKHigh = kline[j].high;
-          // 确认信号: 当前价格突破止跌K的最高价
+
           const curPrice = kline[kline.length - 1].close;
+          const confirmIdx = kline.length - 1;
           result.confirmed = curPrice > kline[j].high;
+
+          if (result.confirmed) {
+            // ── MA21 趋势检测 ──
+            if (confirmIdx >= 21) {
+              const ma21Now = kline.slice(confirmIdx - 21, confirmIdx).reduce((s, k) => s + k.close, 0) / 21;
+              const ma21Prev = kline.slice(confirmIdx - 22, confirmIdx - 1).reduce((s, k) => s + k.close, 0) / 21;
+              result.ma21 = Math.round(ma21Now * 100) / 100;
+              result.ma21Declining = ma21Now < ma21Prev;
+            }
+
+            // ── 跳空缺口检测: 确认日开盘价 vs 前一日收盘 ──
+            if (confirmIdx > 0) {
+              const prevClose = kline[confirmIdx - 1].close;
+              const todayOpen = kline[confirmIdx].open;
+              if (prevClose > 0) {
+                const gapPct = ((todayOpen - prevClose) / prevClose * 100);
+                result.gapUpPct = Math.round(gapPct * 100) / 100;
+                result.hasGapUp = gapPct >= 3;
+              }
+            }
+
+            // ── 信号强度分级 ──
+            if (result.hasGapUp && !result.ma21Declining) {
+              result.signalTier = 3; // 🔥🔥🔥 最强
+            } else if (!result.ma21Declining) {
+              result.signalTier = 2; // 🔥🔥 回踩确认
+            } else {
+              result.signalTier = 1; // 🔥 基础信号
+            }
+          }
           return result;
         }
       }
@@ -1228,12 +1260,28 @@ async function startScreen() {
       const scoreC = scoreDragonReturn(stock, kline, idxChg);
       const scoreD = scoreActiveLianban(stock, kline, idxChg);
 
-      // 底部止跌K检测增强B类: 如果确认信号, B类最多加10分
+      // ── 游资1号信号检测（三层分级）──
       const stopK = detectStopDeclineK(kline);
-      if (stopK.found && stopK.confirmed && scoreB.score > 0) {
-        const bonus = Math.min(10, 10);
+      const yz1Signal = {
+        found: stopK.found && stopK.confirmed,
+        tier: stopK.signalTier || 0,
+        ma21: stopK.ma21,
+        ma21Declining: stopK.ma21Declining,
+        gapUpPct: stopK.gapUpPct,
+        hasGapUp: stopK.hasGapUp
+      };
+      // 增强B类评分: 游资1号信号加分
+      if (yz1Signal.found && scoreB.score > 0) {
+        const bonus = yz1Signal.tier * 5; // tier1=+5, tier2=+10, tier3=+15
         scoreB.score += bonus;
         scoreB.stop_k_confirmed = true;
+        scoreB.yz1 = yz1Signal;
+      }
+      // 其他分类也附加游资1号信息
+      if (yz1Signal.found) {
+        if (scoreA.score > 0) scoreA.yz1 = yz1Signal;
+        if (scoreC.score > 0) scoreC.yz1 = yz1Signal;
+        if (scoreD.score > 0) scoreD.yz1 = yz1Signal;
       }
 
       // Track score distributions
@@ -1285,6 +1333,7 @@ async function startScreen() {
         score: best.score,
         category: best.category,
         metrics: best,
+        yz1: best.yz1 || null,
       });
     }
 
@@ -1297,6 +1346,7 @@ async function startScreen() {
     const bCount = results.filter(r => r.category === 'B').length;
     const cCount = results.filter(r => r.category === 'C').length;
     const dCount = results.filter(r => r.category === 'D').length;
+    const yz1Count = results.filter(r => r.yz1 && r.yz1.found).length;
 
     // === Render Debug Info ===
     debugInfo.topScoresA.sort((a,b) => b.score - a.score);
@@ -1358,6 +1408,7 @@ async function startScreen() {
       b_count: bCount,
       c_count: cCount,
       d_count: dCount,
+      yz1_count: yz1Count,
       index_change: idxChg,
     }, dataDate);
 
@@ -1384,6 +1435,7 @@ function renderResults(results, stats, date) {
     <div class="stat-item"><div class="stat-value" style="color:#a855f7">${stats.c_count}</div><div class="stat-label">C类 · 龙回头</div></div>
     <div class="stat-item"><div class="stat-value">${stats.a_count}</div><div class="stat-label">A类 · 蓄势待发</div></div>
     <div class="stat-item"><div class="stat-value">${stats.b_count}</div><div class="stat-label">B类 · 主升浪中</div></div>
+    ${stats.yz1_count > 0 ? `<div class="stat-item"><div class="stat-value" style="color:#f59e0b">${stats.yz1_count}</div><div class="stat-label">🔥 游资1号</div></div>` : ''}
   `;
 
   // Cards
@@ -1424,6 +1476,27 @@ function renderResults(results, stats, date) {
       if (stock) drawMiniKline(el, stock.kline);
     });
   });
+}
+
+function renderYZ1Tag(yz1) {
+  const tierEmojis = ['', '🔥', '🔥🔥', '🔥🔥🔥'];
+  const tierLabels = ['', '游资1号', '游资1号·回踩确认', '游资1号·跳空强势'];
+  const tierColors = ['', '#f59e0b', '#ef4444', '#dc2626'];
+  const tierBgs = ['', 'rgba(245,158,11,0.08)', 'rgba(239,68,68,0.08)', 'rgba(220,38,38,0.1)'];
+  const tierBorders = ['', 'rgba(245,158,11,0.2)', 'rgba(239,68,68,0.2)', 'rgba(220,38,38,0.3)'];
+
+  const tier = yz1.tier || 1;
+  let detail = tierEmojis[tier] + ' ' + tierLabels[tier];
+
+  // 附加详情
+  const details = [];
+  if (yz1.hasGapUp) details.push('跳空+' + yz1.gapUpPct.toFixed(1) + '%');
+  if (!yz1.ma21Declining && yz1.ma21 > 0) details.push('MA21走平↑');
+  if (yz1.ma21Declining && yz1.ma21 > 0) details.push('MA21仍下行');
+
+  if (details.length) detail += '（' + details.join(' · ') + '）';
+
+  return '<div style="font-size:12px;color:' + tierColors[tier] + ';margin-bottom:8px;padding:6px 10px;background:' + tierBgs[tier] + ';border-radius:6px;border:1px solid ' + tierBorders[tier] + ';font-weight:600">' + detail + '</div>';
 }
 
 function renderCard(stock) {
@@ -1488,7 +1561,7 @@ function renderCard(stock) {
       <div class="metrics-grid">${metricsHTML}</div>
       ${stock.category === 'C' && stock.metrics.post_advice ? `<div style="font-size:12px;color:#a855f7;margin-bottom:8px;padding:6px 10px;background:rgba(168,85,247,0.08);border-radius:6px;border:1px solid rgba(168,85,247,0.2)">💡 ${stock.metrics.post_advice}</div>` : ''}
       ${stock.category === 'D' && stock.metrics.post_advice ? `<div style="font-size:12px;color:#3b82f6;margin-bottom:8px;padding:6px 10px;background:rgba(59,130,246,0.08);border-radius:6px;border:1px solid rgba(59,130,246,0.2)">💡 ${stock.metrics.post_advice}</div>` : ''}
-      ${stock.category === 'B' && stock.metrics.stop_k_confirmed ? `<div style="font-size:12px;color:#f59e0b;margin-bottom:8px;padding:6px 10px;background:rgba(245,158,11,0.08);border-radius:6px;border:1px solid rgba(245,158,11,0.2)">💡 底部止跌K确认信号，突破止损K高点</div>` : ''}
+      ${stock.yz1 && stock.yz1.found ? renderYZ1Tag(stock.yz1) : ''}
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:12px;color:var(--muted-foreground)">综合评分</span>
         <span style="font-size:16px;font-weight:700;color:${barColor}">${stock.score}</span>
