@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>API诊断 v2</title>
+<style>
+body { background:#111; color:#eee; font-family:-apple-system,sans-serif; padding:20px; font-size:15px; }
+.test { margin:16px 0; padding:14px; background:#1a1a1a; border-radius:10px; }
+.test h3 { margin:0 0 8px; font-size:15px; }
+.result { font-size:13px; word-break:break-all; }
+.ok { color:#4caf50; } .fail { color:#f44336; } .wait { color:#ff9800; }
+button { background:#d4a853; color:#111; border:none; padding:10px 20px; border-radius:8px; font-size:15px; cursor:pointer; margin-top:12px; }
+</style>
+</head>
+<body>
+<h2>API诊断 v2</h2>
+<p>测试5个API在你手机浏览器的可用性</p>
+<button onclick="runAll()">开始测试</button>
+<div id="results"></div>
+
+<script>
+function show(id, cls, msg) {
+  const el = document.getElementById(id);
+  if (el) { el.className = 'result ' + cls; el.textContent = msg; }
+}
+function addResult(name, id) {
+  const div = document.createElement('div');
+  div.className = 'test';
+  div.innerHTML = '<h3>' + name + '</h3><div class="result wait" id="' + id + '">等待测试...</div>';
+  document.getElementById('results').appendChild(div);
+}
+
+async function runAll() {
+  document.getElementById('results').innerHTML = '';
+  
+  // Test 1: Tencent K-line API (fetch) - CONFIRMED WORKING
+  addResult('① 腾讯K线 fetch (web.ifzq.gtimg.cn)', 't1');
+  try {
+    const r = await fetch('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600000,day,,,2,qfq', {cache:'no-cache'});
+    const j = await r.json();
+    const d = j.data?.sh600000?.qfqday;
+    show('t1', d && d.length ? 'ok' : 'fail', (d && d.length ? '✅ 成功! 最后日期:'+d[d.length-1][0]+' 收盘:'+d[d.length-1][2] : '❌ 空数据'));
+  } catch(e) { show('t1','fail','❌ '+e.message); }
+
+  // Test 2: Sina hq.sinajs.cn script injection
+  addResult(' 新浪行情 script注入 (hq.sinajs.cn)', 't2');
+  try {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      const tid = setTimeout(() => { try{s.remove()}catch(e){}; reject(new Error('timeout 8s')); }, 8000);
+      s.onload = () => { clearTimeout(tid); try{s.remove()}catch(e){}; resolve(); };
+      s.onerror = () => { clearTimeout(tid); try{s.remove()}catch(e){}; reject(new Error('load error')); };
+      s.src = 'https://hq.sinajs.cn/list=sh600000';
+      document.head.appendChild(s);
+    });
+    const raw = window['hq_str_sh600000'];
+    if (raw) {
+      delete window['hq_str_sh600000'];
+      const f = raw.split(',');
+      show('t2','ok','✅ 成功! '+f[0]+' 价格:'+f[3]+' 昨收:'+f[2]);
+    } else { show('t2','fail','❌ 变量未生成'); }
+  } catch(e) { show('t2','fail','❌ '+e.message); }
+
+  // Test 3: Sina hq.sinajs.cn multiple stocks script injection
+  addResult('③ 新浪批量 script注入 (80只)', 't3');
+  try {
+    const syms = ['sh600000','sh600519','sh601318','sz000001','sz000858','sz300750'].join(',');
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      const tid = setTimeout(() => { try{s.remove()}catch(e){}; reject(new Error('timeout 8s')); }, 8000);
+      s.onload = () => { clearTimeout(tid); try{s.remove()}catch(e){}; resolve(); };
+      s.onerror = () => { clearTimeout(tid); try{s.remove()}catch(e){}; reject(new Error('load error')); };
+      s.src = 'https://hq.sinajs.cn/list=' + syms;
+      document.head.appendChild(s);
+    });
+    const raw = window['hq_str_sh600519'];
+    if (raw) {
+      delete window['hq_str_sh600519'];
+      const f = raw.split(',');
+      show('t3','ok','✅ 成功! 茅台:'+f[3]);
+    } else { show('t3','fail','❌ 变量未生成(可能被限流)'); }
+  } catch(e) { show('t3','fail',' '+e.message); }
+
+  // Test 4: Tencent batch quote API (fetch)
+  addResult('④ 腾讯批量行情 fetch (web.sqt.gtimg.cn)', 't4');
+  try {
+    const r = await fetch('https://web.sqt.gtimg.cn/q=sh600000,sh600519', {cache:'no-cache'});
+    const t = await r.text();
+    show('t4', t.includes('600000') ? 'ok' : 'fail', (t.includes('600000') ? '✅ 成功! 长度:'+t.length : '❌ 无数据, length:'+t.length));
+  } catch(e) { show('t4','fail','❌ '+e.message); }
+
+  // Test 5: Tencent K-line batch (multiple stocks, 2 days each)
+  addResult(' 腾讯K线批量 (10只并发)', 't5');
+  try {
+    const codes = ['sh600000','sh600519','sh601318','sz000001','sz000858','sz300750','sh600036','sh601012','sz002594','sh688981'];
+    const results = await Promise.all(codes.map(c => 
+      fetch('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param='+c+',day,,,2,qfq',{cache:'no-cache'})
+        .then(r => r.json()).then(j => { const d=j.data?.[c]?.qfqday; return {code:c, ok: d&&d.length>0, price: d?d[d.length-1][2]:'-'}; })
+        .catch(e => ({code:c, ok:false, err:e.message}))
+    ));
+    const ok = results.filter(r => r.ok).length;
+    show('t5', ok >= 5 ? 'ok' : 'fail', (ok >= 5 ? '✅ '+ok+'/'+codes.length+' 成功' : '⚠️ '+ok+'/'+codes.length+' 成功') + ' | ' + results.map(r=>r.code+':'+(r.ok?'✓'+r.price:'✗')).join(' '));
+  } catch(e) { show('t5','fail','❌ '+e.message); }
+}
+</script>
+</body>
+</html>

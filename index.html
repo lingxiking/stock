@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v7.6 · 四模型量化引擎 · 极速扫描</p>
+  <p>灵犀King · AI主升 v7.7 · 四模型量化引擎 · 腾讯单源引擎</p>
 </footer>
 
 <script>
@@ -303,14 +303,11 @@ async function fetchAllStocks() {
 
   let allStocks = [];
   let stFiltered = 0;
-
   for (const [code, name, market] of STOCK_LIST) {
     const prefix = code.substring(0, 3);
     let match = false;
     for (const b of segmentsToFetch) {
-      if (BOARD_PREFIXES[b].some(p => prefix.startsWith(p) || code.startsWith(p))) {
-        match = true; break;
-      }
+      if (BOARD_PREFIXES[b].some(p => prefix.startsWith(p) || code.startsWith(p))) { match = true; break; }
     }
     if (!match) continue;
     if (name.includes('ST') || name.includes('st') || name.includes('*')) { stFiltered++; continue; }
@@ -318,101 +315,46 @@ async function fetchAllStocks() {
   }
   console.log(`Stock list: ${allStocks.length} candidates`);
 
-  const priceData = {};
-  let amountFiltered = 0;
-
-  // ── Method: Sina hq.sinajs.cn via <script> injection (no CORS) ──
-  const BATCH = 80;
-  let batchesDone = 0;
-  let batchesFailed = 0;
-  const MAX_FAIL = 3; // stop after 3 consecutive failures
-
-  for (let i = 0; i < allStocks.length; i += BATCH) {
-    const batch = allStocks.slice(i, i + BATCH);
-    const prefix = market => market === 1 ? 'sh' : 'sz';
-    const symbols = batch.map(s => `${prefix(s.market)}${s.code}`).join(',');
-
-    try {
-      await new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        const tid = setTimeout(() => {
-          try { document.head.removeChild(script); } catch(e){}
-          reject(new Error('timeout'));
-        }, 6000);
-        script.onload = () => { clearTimeout(tid); try { document.head.removeChild(script); } catch(e){} resolve(); };
-        script.onerror = () => { clearTimeout(tid); try { document.head.removeChild(script); } catch(e){} reject(new Error('error')); };
-        script.src = `https://hq.sinajs.cn/list=${symbols}`;
-        document.head.appendChild(script);
-      });
-
-      let gotAny = false;
-      for (const s of batch) {
-        const sym = `${s.market === 1 ? 'sh' : 'sz'}${s.code}`;
-        const raw = window[`hq_str_${sym}`];
-        if (raw) { delete window[`hq_str_${sym}`]; }
-        if (!raw) continue;
-        const f = raw.split(',');
-        if (f.length < 10) continue;
-        const price = parseFloat(f[3]);
-        const prevClose = parseFloat(f[2]);
-        const volume = parseInt(f[8]) || 0;
-        const amount = parseFloat(f[9]) || 0;
-        if (!price || price <= 0 || volume <= 0) continue;
-        if (amount < 3000000) { amountFiltered++; continue; }
-        priceData[s.code] = { price, prevClose, open: parseFloat(f[1])||price, high: parseFloat(f[4])||price, low: parseFloat(f[5])||price, volume, amount };
-        gotAny = true;
-      }
-      batchesDone++;
-      batchesFailed = 0;
-      if (batchesDone % 10 === 0) console.log(`Sina: ${Math.min(i+BATCH, allStocks.length)}/${allStocks.length}, got ${Object.keys(priceData).length} prices`);
-    } catch(e) {
-      batchesFailed++;
-      console.warn(`Sina batch ${batchesDone+1} failed: ${e.message}`);
-      if (batchesFailed >= MAX_FAIL) {
-        console.warn(`Sina: ${MAX_FAIL} consecutive failures, stopping.`);
-        break;
-      }
-    }
-
-    if (i + BATCH < allStocks.length) await new Promise(r => setTimeout(r, 80));
-  }
-
-  // ── Fallback: Tencent K-line for stocks without price ──
-  const missing = allStocks.filter(s => !priceData[s.code]);
-  if (missing.length > 0 && Object.keys(priceData).length < allStocks.length * 0.3) {
-    console.log(`Sina insufficient (${Object.keys(priceData).length}/${allStocks.length}), Tencent fallback for ${missing.length} stocks`);
-    const CONC = 8;
-    const IV = 100;
-    for (let i = 0; i < missing.length; i += CONC) {
-      const batch = missing.slice(i, i + CONC);
-      const results = await Promise.all(batch.map(async s => {
-        const pfx = s.market === 1 ? 'sh' : 'sz';
-        const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${pfx}${s.code},day,,,2,qfq`;
-        try {
-          const r = await fetch(url, {cache:'no-cache'});
-          if (!r.ok) return null;
-          const j = await r.json();
-          const kd = j.data?.[`${pfx}${s.code}`]?.qfqday;
-          if (!kd || kd.length === 0) return null;
-          const last = kd[kd.length-1], prev = kd.length>=2 ? kd[kd.length-2] : last;
-          const price = parseFloat(last[2]), vol = parseInt(last[5])||0;
-          if (!price || price <= 0) return null;
-          const amt = price * vol;
-          if (amt < 3000000) { amountFiltered++; return null; }
-          return { code: s.code, price, prevClose: parseFloat(prev[2]), open: parseFloat(last[1])||price, high: parseFloat(last[3])||price, low: parseFloat(last[4])||price, volume: vol, amount: amt };
-        } catch(e) { return null; }
-      }));
-      for (const r of results) { if (r) priceData[r.code] = r; }
-      if (i + CONC < missing.length) await new Promise(r => setTimeout(r, IV));
-    }
-  }
-
   const result = [];
-  for (const s of allStocks) {
-    const p = priceData[s.code];
-    if (!p || !p.price) continue;
-    const chg = p.prevClose ? ((p.price - p.prevClose) / p.prevClose * 100) : 0;
-    result.push({ ...s, price: p.price, change_pct: +chg.toFixed(2), volume: p.volume, amount: p.amount, high: p.high||p.price, low: p.low||p.price, open: p.open||p.price, prev_close: p.prevClose||p.price, turnover_rate: 0 });
+  let amountFiltered = 0;
+  const CONC = 12;
+  const IV = 100;
+
+  for (let i = 0; i < allStocks.length; i += CONC) {
+    const batch = allStocks.slice(i, i + CONC);
+    const results = await Promise.all(batch.map(async s => {
+      const pfx = s.market === 1 ? 'sh' : 'sz';
+      const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${pfx}${s.code},day,,,2,qfq`;
+      try {
+        const r = await fetch(url, {cache:'no-cache'});
+        if (!r.ok) return null;
+        const j = await r.json();
+        const kd = j.data?.[`${pfx}${s.code}`]?.qfqday;
+        if (!kd || kd.length === 0) return null;
+        const last = kd[kd.length-1];
+        const prev = kd.length >= 2 ? kd[kd.length-2] : last;
+        const price = parseFloat(last[2]);
+        const vol = parseInt(last[5]) || 0;
+        if (!price || price <= 0 || vol <= 0) return null;
+        const amount = price * vol;
+        if (amount < 3000000) { amountFiltered++; return null; }
+        return {
+          ...s,
+          price, prev_close: parseFloat(prev[2]) || price,
+          open: parseFloat(last[1]) || price,
+          high: parseFloat(last[3]) || price,
+          low: parseFloat(last[4]) || price,
+          volume: vol, amount,
+          change_pct: +(((price - (parseFloat(prev[2])||price)) / (parseFloat(prev[2])||price) * 100)).toFixed(2),
+          turnover_rate: 0
+        };
+      } catch(e) { return null; }
+    }));
+    for (const r of results) { if (r) result.push(r); }
+    // Update progress
+    const pt = document.getElementById('progressText');
+    if (pt) pt.textContent = `获取行情 ${Math.min(i+CONC,allStocks.length)}/${allStocks.length} 已得${result.length}只`;
+    if (i + CONC < allStocks.length) await new Promise(r => setTimeout(r, IV));
   }
 
   window._apiTotal = STOCK_LIST.length;
@@ -422,7 +364,7 @@ async function fetchAllStocks() {
   console.log(`fetchAllStocks: ${result.length} stocks with prices`);
   return result;
 }
-// ── K-line data ──// ── K-line data ──// ── K-line data ──
+// ── K-line data ──// ── K-line data ──// ── K-line data ──// ── K-line data ──// ── K-line data ──
 async function fetchKline(code, market, days=60) {
   const fetchDays = Math.max(days + 20, 80);
   const prefix = market === 1 ? 'sh' : 'sz';
@@ -477,26 +419,22 @@ async function fetchKline(code, market, days=60) {
 }
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
-  // Pre-filter: only fetch K-line for stocks with meaningful activity
-  const active = stocks.filter(s => {
-    if (s.change_pct < -3) return false; // skip deep losers
-    if (s.amount < 3000000) return false; // skip illiquid
-    return true;
-  });
-  console.log(`K-line pre-filter: ${stocks.length} -> ${active.length} active stocks`);
+  // Pre-filter for K-line scoring
+  const active = stocks.filter(s => s.change_pct >= -3 && s.amount >= 3000000);
+  console.log(`K-line pre-filter: ${stocks.length} -> ${active.length}`);
 
-  const CONCURRENCY = 6;
-  const INTERVAL = 200;
-  for (let i = 0; i < active.length; i += CONCURRENCY) {
-    const batch = active.slice(i, i + CONCURRENCY);
+  const CONC = 8;
+  const IV = 150;
+  for (let i = 0; i < active.length; i += CONC) {
+    const batch = active.slice(i, i + CONC);
     const promises = batch.map(async s => {
       const kline = await fetchKline(s.code, s.market, days);
       if (kline.length >= 10) results[s.code] = kline;
     });
     await Promise.all(promises);
-    if (i + CONCURRENCY < active.length) await new Promise(r => setTimeout(r, INTERVAL));
+    if (i + CONC < active.length) await new Promise(r => setTimeout(r, IV));
   }
-  console.log(`K-line fetch done: ${Object.keys(results).length} stocks`);
+  console.log(`K-line done: ${Object.keys(results).length}`);
   return results;
 }
 
@@ -518,26 +456,8 @@ async function fetchMarketIndex() {
   return { price: 0, change_pct: 0 };
 }
 
-// ── Hot Concepts (top rising sectors) ──
-async function fetchHotConcepts() {
-  try {
-    const url = 'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=20&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f12,f14,f3';
-    const resp = await fetch(url);
-    const data = await resp.json();
-    const concepts = [];
-    apiTotal = (data && data.data && data.data.total) || 0;
-    apiRawCount = (data && data.data && data.data.diff) ? data.data.diff.length : 0;
-    if (data && data.data && data.data.diff) {
-      for (const item of data.data.diff) {
-        concepts.push({ code: item.f12, name: item.f14, change_pct: item.f3 });
-      }
-    }
-    return concepts;
-  } catch(e) {
-    console.warn('Fetch hot concepts error:', e);
-    return [];
-  }
-}
+// ── Hot Concepts ── (disabled: Eastmoney API unavailable in browser)
+async function fetchHotConcepts() { return []; }
 
 // ── Technical indicators ──
 function calcMA(closes, period) {
@@ -1193,7 +1113,7 @@ async function startScreen() {
       const scoreB = b.change_pct * 0.5 + b.turnover_rate * 0.3;
       return scoreB - scoreA;
     });
-    const topCandidates = allStocks.slice(0, 300);
+    const topCandidates = allStocks.slice(0, 500);
 
     // Step 3: Fetch K-lines for candidates
     const klineData = await fetchKlinesBatch(topCandidates, 60);
