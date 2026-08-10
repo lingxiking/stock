@@ -217,7 +217,7 @@ footer p { font-size: 11px; color: var(--muted-foreground); }
 </div>
 
 <footer>
-  <p>灵犀King · AI主升 v7.5 · 四模型量化引擎 · 新浪JSONP行情+腾讯K线</p>
+  <p>灵犀King · AI主升 v7.6 · 四模型量化引擎 · 极速扫描</p>
 </footer>
 
 <script>
@@ -296,14 +296,13 @@ const STOCK_LIST = [["600000", "浦发银行", 1], ["600004", "白云机场", 1]
 
 // ── Data fetching via EastMoney API ──
 async function fetchAllStocks() {
-  // Use embedded STOCK_LIST as primary source (no external API needed)
   const segmentsToFetch = [];
   if (selectedBoards.includes('main')) segmentsToFetch.push('main');
   if (selectedBoards.includes('gem')) segmentsToFetch.push('gem');
   if (selectedBoards.includes('star')) segmentsToFetch.push('star');
 
   let allStocks = [];
-  let stFiltered = 0, amountFiltered = 0;
+  let stFiltered = 0;
 
   for (const [code, name, market] of STOCK_LIST) {
     const prefix = code.substring(0, 3);
@@ -317,153 +316,113 @@ async function fetchAllStocks() {
     if (name.includes('ST') || name.includes('st') || name.includes('*')) { stFiltered++; continue; }
     allStocks.push({ code, name, market });
   }
-  console.log(`Stock list: ${allStocks.length} candidates after board+ST filter`);
+  console.log(`Stock list: ${allStocks.length} candidates`);
 
-  // ── Method 1: Sina hq.sinajs.cn via script tag injection (JSONP-style, no CORS) ──
   const priceData = {};
-  const BATCH = 50; // Sina supports ~50 stocks per request
+  let amountFiltered = 0;
 
-  function sinaScriptFetch(symbols) {
-    return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      const timeout = setTimeout(() => {
-        document.head.removeChild(script);
-        reject(new Error('Sina script timeout'));
-      }, 8000);
-      script.onload = () => {
-        clearTimeout(timeout);
-        document.head.removeChild(script);
-        resolve();
-      };
-      script.onerror = () => {
-        clearTimeout(timeout);
-        document.head.removeChild(script);
-        reject(new Error('Sina script load failed'));
-      };
-      script.src = `https://hq.sinajs.cn/list=${symbols}`;
-      document.head.appendChild(script);
-    });
-  }
+  // ── Method: Sina hq.sinajs.cn via <script> injection (no CORS) ──
+  const BATCH = 80;
+  let batchesDone = 0;
+  let batchesFailed = 0;
+  const MAX_FAIL = 3; // stop after 3 consecutive failures
 
-  let sinaOk = true;
-  for (let i = 0; i < allStocks.length && sinaOk; i += BATCH) {
+  for (let i = 0; i < allStocks.length; i += BATCH) {
     const batch = allStocks.slice(i, i + BATCH);
     const prefix = market => market === 1 ? 'sh' : 'sz';
     const symbols = batch.map(s => `${prefix(s.market)}${s.code}`).join(',');
 
     try {
-      await sinaScriptFetch(symbols);
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        const tid = setTimeout(() => {
+          try { document.head.removeChild(script); } catch(e){}
+          reject(new Error('timeout'));
+        }, 6000);
+        script.onload = () => { clearTimeout(tid); try { document.head.removeChild(script); } catch(e){} resolve(); };
+        script.onerror = () => { clearTimeout(tid); try { document.head.removeChild(script); } catch(e){} reject(new Error('error')); };
+        script.src = `https://hq.sinajs.cn/list=${symbols}`;
+        document.head.appendChild(script);
+      });
 
+      let gotAny = false;
       for (const s of batch) {
         const sym = `${s.market === 1 ? 'sh' : 'sz'}${s.code}`;
-        const varName = `hq_str_${sym}`;
-        const raw = window[varName];
+        const raw = window[`hq_str_${sym}`];
+        if (raw) { delete window[`hq_str_${sym}`]; }
         if (!raw) continue;
-        delete window[varName]; // cleanup
-
-        const fields = raw.split(',');
-        if (fields.length < 10) continue;
-
-        const name = fields[0];
-        const open = parseFloat(fields[1]);
-        const prevClose = parseFloat(fields[2]);
-        const price = parseFloat(fields[3]);
-        const high = parseFloat(fields[4]);
-        const low = parseFloat(fields[5]);
-        const volume = parseInt(fields[8]) || 0; // already in 股
-        const amount = parseFloat(fields[9]) || 0; // already in 元
-
+        const f = raw.split(',');
+        if (f.length < 10) continue;
+        const price = parseFloat(f[3]);
+        const prevClose = parseFloat(f[2]);
+        const volume = parseInt(f[8]) || 0;
+        const amount = parseFloat(f[9]) || 0;
         if (!price || price <= 0 || volume <= 0) continue;
-        if (amount < 5000000) { amountFiltered++; continue; }
-
-        priceData[s.code] = { price, prevClose, open, high, low, volume, amount };
+        if (amount < 3000000) { amountFiltered++; continue; }
+        priceData[s.code] = { price, prevClose, open: parseFloat(f[1])||price, high: parseFloat(f[4])||price, low: parseFloat(f[5])||price, volume, amount };
+        gotAny = true;
       }
+      batchesDone++;
+      batchesFailed = 0;
+      if (batchesDone % 10 === 0) console.log(`Sina: ${Math.min(i+BATCH, allStocks.length)}/${allStocks.length}, got ${Object.keys(priceData).length} prices`);
     } catch(e) {
-      console.warn(`Sina script fetch failed at offset ${i}: ${e.message}. Switching to fallback.`);
-      sinaOk = false;
+      batchesFailed++;
+      console.warn(`Sina batch ${batchesDone+1} failed: ${e.message}`);
+      if (batchesFailed >= MAX_FAIL) {
+        console.warn(`Sina: ${MAX_FAIL} consecutive failures, stopping.`);
+        break;
+      }
     }
 
-    if (i + BATCH < allStocks.length && sinaOk) {
-      console.log(`Sina fetch: ${Math.min(i + BATCH, allStocks.length)}/${allStocks.length}`);
-      await new Promise(r => setTimeout(r, 100));
-    }
+    if (i + BATCH < allStocks.length) await new Promise(r => setTimeout(r, 80));
   }
 
-  // ── Method 2 (fallback): Tencent K-line API for stocks without price data ──
-  const needFallback = allStocks.filter(s => !priceData[s.code]);
-  if (needFallback.length > 0 && !sinaOk) {
-    console.log(`Fallback: fetching ${needFallback.length} stocks via Tencent K-line API`);
-    const CONCURRENCY = 5;
-    const INTERVAL = 120;
-
-    for (let i = 0; i < needFallback.length; i += CONCURRENCY) {
-      const batch = needFallback.slice(i, i + CONCURRENCY);
-      const promises = batch.map(async (s) => {
-        const prefix = s.market === 1 ? 'sh' : 'sz';
-        const symbol = `${prefix}${s.code}`;
-        const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,2,qfq`;
+  // ── Fallback: Tencent K-line for stocks without price ──
+  const missing = allStocks.filter(s => !priceData[s.code]);
+  if (missing.length > 0 && Object.keys(priceData).length < allStocks.length * 0.3) {
+    console.log(`Sina insufficient (${Object.keys(priceData).length}/${allStocks.length}), Tencent fallback for ${missing.length} stocks`);
+    const CONC = 8;
+    const IV = 100;
+    for (let i = 0; i < missing.length; i += CONC) {
+      const batch = missing.slice(i, i + CONC);
+      const results = await Promise.all(batch.map(async s => {
+        const pfx = s.market === 1 ? 'sh' : 'sz';
+        const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${pfx}${s.code},day,,,2,qfq`;
         try {
-          const resp = await fetch(url, { cache: 'no-cache' });
-          if (!resp.ok) return null;
-          const json = await resp.json();
-          const kdata = json.data?.[symbol]?.qfqday;
-          if (!kdata || kdata.length === 0) return null;
-          const last = kdata[kdata.length - 1];
-          const prev = kdata.length >= 2 ? kdata[kdata.length - 2] : last;
-          const price = parseFloat(last[2]);
-          const prevClose = parseFloat(prev[2]);
-          const volume = parseInt(last[5]) || 0;
+          const r = await fetch(url, {cache:'no-cache'});
+          if (!r.ok) return null;
+          const j = await r.json();
+          const kd = j.data?.[`${pfx}${s.code}`]?.qfqday;
+          if (!kd || kd.length === 0) return null;
+          const last = kd[kd.length-1], prev = kd.length>=2 ? kd[kd.length-2] : last;
+          const price = parseFloat(last[2]), vol = parseInt(last[5])||0;
           if (!price || price <= 0) return null;
-          const amount = price * volume; // estimate
-          if (amount < 5000000) { amountFiltered++; return null; }
-          return {
-            code: s.code, price, prevClose,
-            open: parseFloat(last[1]) || price,
-            high: parseFloat(last[3]) || price,
-            low: parseFloat(last[4]) || price,
-            volume, amount
-          };
+          const amt = price * vol;
+          if (amt < 3000000) { amountFiltered++; return null; }
+          return { code: s.code, price, prevClose: parseFloat(prev[2]), open: parseFloat(last[1])||price, high: parseFloat(last[3])||price, low: parseFloat(last[4])||price, volume: vol, amount: amt };
         } catch(e) { return null; }
-      });
-      const results = await Promise.all(promises);
-      for (const r of results) {
-        if (r) priceData[r.code] = r;
-      }
-      if (i + CONCURRENCY < needFallback.length) {
-        console.log(`Tencent fallback: ${Math.min(i + CONCURRENCY, needFallback.length)}/${needFallback.length}`);
-        await new Promise(r => setTimeout(r, INTERVAL));
-      }
+      }));
+      for (const r of results) { if (r) priceData[r.code] = r; }
+      if (i + CONC < missing.length) await new Promise(r => setTimeout(r, IV));
     }
   }
 
-  // Merge price data into stock list
   const result = [];
   for (const s of allStocks) {
     const p = priceData[s.code];
     if (!p || !p.price) continue;
-    const changePct = p.prevClose ? ((p.price - p.prevClose) / p.prevClose * 100) : 0;
-    result.push({
-      ...s,
-      price: p.price,
-      change_pct: +changePct.toFixed(2),
-      volume: p.volume,
-      amount: p.amount,
-      high: p.high || p.price,
-      low: p.low || p.price,
-      open: p.open || p.price,
-      prev_close: p.prevClose || p.price,
-      turnover_rate: 0,
-    });
+    const chg = p.prevClose ? ((p.price - p.prevClose) / p.prevClose * 100) : 0;
+    result.push({ ...s, price: p.price, change_pct: +chg.toFixed(2), volume: p.volume, amount: p.amount, high: p.high||p.price, low: p.low||p.price, open: p.open||p.price, prev_close: p.prevClose||p.price, turnover_rate: 0 });
   }
 
   window._apiTotal = STOCK_LIST.length;
   window._apiRawCount = allStocks.length;
   window._amountFiltered = amountFiltered;
   window._stFiltered = stFiltered;
-  console.log(`fetchAllStocks: ${result.length} stocks with prices (sina=${sinaOk ? 'ok' : 'failed, used fallback'})`);
+  console.log(`fetchAllStocks: ${result.length} stocks with prices`);
   return result;
 }
-// ── K-line data ──// ── K-line data ──
+// ── K-line data ──// ── K-line data ──// ── K-line data ──
 async function fetchKline(code, market, days=60) {
   const fetchDays = Math.max(days + 20, 80);
   const prefix = market === 1 ? 'sh' : 'sz';
@@ -518,21 +477,26 @@ async function fetchKline(code, market, days=60) {
 }
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
-  // Sina JSONP can handle higher concurrency
-  const CONCURRENCY = 2; // conservative for Tencent rate limit
-  for (let i = 0; i < stocks.length; i += CONCURRENCY) {
-    const batch = stocks.slice(i, i + CONCURRENCY);
+  // Pre-filter: only fetch K-line for stocks with meaningful activity
+  const active = stocks.filter(s => {
+    if (s.change_pct < -3) return false; // skip deep losers
+    if (s.amount < 3000000) return false; // skip illiquid
+    return true;
+  });
+  console.log(`K-line pre-filter: ${stocks.length} -> ${active.length} active stocks`);
+
+  const CONCURRENCY = 6;
+  const INTERVAL = 200;
+  for (let i = 0; i < active.length; i += CONCURRENCY) {
+    const batch = active.slice(i, i + CONCURRENCY);
     const promises = batch.map(async s => {
       const kline = await fetchKline(s.code, s.market, days);
-      if (kline.length >= 10) {
-        results[s.code] = kline;
-      }
+      if (kline.length >= 10) results[s.code] = kline;
     });
     await Promise.all(promises);
-    if (i + CONCURRENCY < stocks.length) {
-      await new Promise(r => setTimeout(r, 800)); // conservative: 800ms between batches for Tencent
-    }
+    if (i + CONCURRENCY < active.length) await new Promise(r => setTimeout(r, INTERVAL));
   }
+  console.log(`K-line fetch done: ${Object.keys(results).length} stocks`);
   return results;
 }
 
@@ -1215,11 +1179,11 @@ async function startScreen() {
   }, 3000);
 
   try {
-    // Step 0: Fetch market index for 逆势而为 scoring
-    const marketIndex = await fetchMarketIndex();
-
-    // Step 1: Fetch all stocks
-    let allStocks = await fetchAllStocks();
+    // Step 0+1: Fetch market index and stocks in parallel
+    const [marketIndex, allStocks] = await Promise.all([
+      fetchMarketIndex(),
+      fetchAllStocks()
+    ]);
     if (!allStocks.length) throw new Error('无法获取行情数据，请检查网络或稍后重试');
 
     // Step 2: Sort by composite score (change% + turnover + volume activity) and take top candidates
@@ -1229,7 +1193,7 @@ async function startScreen() {
       const scoreB = b.change_pct * 0.5 + b.turnover_rate * 0.3;
       return scoreB - scoreA;
     });
-    const topCandidates = allStocks.slice(0, 500);
+    const topCandidates = allStocks.slice(0, 300);
 
     // Step 3: Fetch K-lines for candidates
     const klineData = await fetchKlinesBatch(topCandidates, 60);
