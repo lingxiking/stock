@@ -405,96 +405,62 @@ async function fetchKline(code, market, days=60) {
   const fetchDays = Math.max(days + 20, 80);
   const prefix = market === 1 ? 'sh' : 'sz';
   const symbol = `${prefix}${code}`;
-
-  // Source 1: Tencent kline API with fallback URLs
-  for (let retry = 0; retry < 2; retry++) {
-    const urls = [
-      `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${fetchDays},qfq`,
-      `https://web.ifzq.gtimg.cn/appstock/app/kline/mkline?param=${symbol},day,,${fetchDays}`
-    ];
-    for (const url of urls) {
-      try {
-        const resp = await fetch(url, { cache: 'no-cache' });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data && data.data) {
-            const stockData = data.data[symbol];
-            if (stockData) {
-              const klines = stockData.qfqday || stockData.day || [];
-              if (klines.length > 0) {
-                return klines.slice(-days).map(line => ({
-                  time: line[0], open: +line[1], close: +line[2],
-                  high: +line[3], low: +line[4], volume: +line[5],
-                }));
-              }
-            }
-          }
-        }
-      } catch(e) { /* try next */ }
-    }
-    if (retry === 0) await new Promise(r => setTimeout(r, 500));
-  }
-
-  // Source 2: Sina JSONP fallback
   try {
-    const cbVar = `_sinaKline_${symbol}`;
-    const result = await new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      const timeout = setTimeout(() => { cleanup(); reject(new Error('Sina timeout')); }, 8000);
-      function cleanup() { clearTimeout(timeout); try { delete window[cbVar]; } catch(e) {} if (script.parentNode) script.parentNode.removeChild(script); }
-      window[cbVar] = function(data) {
-        cleanup();
-        if (data && Array.isArray(data) && data.length > 0 && data[0].day) {
-          resolve(data.slice(-days).map(d => ({ time: d.day, open: +d.open, close: +d.close, high: +d.high, low: +d.low, volume: +d.volume })));
-        } else { reject(new Error('Sina empty')); }
-      };
-      script.onerror = () => { cleanup(); reject(new Error('Sina error')); };
-      script.src = `https://quotes.sina.cn/cn/api/jsonp.php/${cbVar}(/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=${fetchDays}&_=${Date.now()}`;
-      document.head.appendChild(script);
-    });
-    return result;
-  } catch(e) { /* Sina also failed */ }
-
+    const resp = await fetch(`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${fetchDays},qfq`, { cache: 'no-store' });
+    if (resp.ok) {
+      const data = await resp.json();
+      const stockData = data?.data?.[symbol];
+      if (stockData) {
+        const klines = stockData.qfqday || stockData.day || [];
+        if (klines.length > 0) {
+          return klines.slice(-days).map(line => ({
+            time: line[0], open: +line[1], close: +line[2],
+            high: +line[3], low: +line[4], volume: +line[5],
+          }));
+        }
+      }
+    }
+  } catch(e) { /* fail */ }
   return [];
 }
 async function fetchKlinesBatch(stocks, days=60) {
   const results = {};
-  // Pre-filter for K-line scoring
-  const active = stocks.filter(s => s.change_pct >= -3 && s.amount >= 100); // amount in 万元, threshold=100万
+  const active = stocks.filter(s => s.change_pct >= -3 && s.amount >= 100);
   console.log(`K-line pre-filter: ${stocks.length} -> ${active.length}`);
 
-  const CONC = 8;
-  const IV = 150;
+  const CONC = 12;
+  const IV = 80;
+  let okCount = 0;
   for (let i = 0; i < active.length; i += CONC) {
     const batch = active.slice(i, i + CONC);
-    const promises = batch.map(async s => {
+    await Promise.all(batch.map(async s => {
       const kline = await fetchKline(s.code, s.market, days);
-      if (kline.length >= 10) results[s.code] = kline;
-    });
-    await Promise.all(promises);
+      if (kline.length >= 10) { results[s.code] = kline; okCount++; }
+    }));
+    const pt = document.getElementById('progressText');
+    if (pt) pt.textContent = `拉取K线 ${Math.min(i+CONC,active.length)}/${active.length} 成功${okCount}只`;
     if (i + CONC < active.length) await new Promise(r => setTimeout(r, IV));
   }
-  console.log(`K-line done: ${Object.keys(results).length}`);
+  console.log(`K-line done: ${okCount}/${active.length}`);
   return results;
 }
 
 // ── Market Index ──
 async function fetchMarketIndex() {
   try {
-    const url = 'https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fields=f43,f170';
-    const resp = await fetch(url);
-    const data = await resp.json();
-    if (data && data.data) {
-      // f43 = latest price (x100), f170 = change pct (x100)
-      const price = (data.data.f43 || 0) / 100;
-      const changePct = (data.data.f170 || 0) / 100;
-      return { price, change_pct: changePct };
+    const resp = await fetch('https://qt.gtimg.cn/q=sh000001', { cache: 'no-store' });
+    const buf = await resp.arrayBuffer();
+    let text;
+    try { text = new TextDecoder('gbk').decode(buf); } catch(e) { text = new TextDecoder('utf-8').decode(buf); }
+    const m = text.match(/v_sh000001="([^"]*)"/);
+    if (m) {
+      const f = m[1].split('~');
+      if (f.length > 32) return { price: parseFloat(f[3]) || 0, change_pct: parseFloat(f[32]) || 0 };
     }
-  } catch(e) {
-    console.warn('Fetch index error:', e);
-  }
+  } catch(e) { console.warn('Index error:', e); }
   return { price: 0, change_pct: 0 };
 }
+
 
 // ── Hot Concepts ── (disabled: Eastmoney API unavailable in browser)
 async function fetchHotConcepts() { return []; }
