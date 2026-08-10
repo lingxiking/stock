@@ -12,6 +12,15 @@ h3{color:#d4a853;} pre{white-space:pre-wrap;word-break:break-all;font-size:12px;
 <h2>🔍 K线API浏览器端测试</h2>
 <p>测试时间: <span id="time"></span></p>
 <div id="results"></div>
+
+<!-- Stock List API Test -->
+<div class="test-item" id="stockListResult">
+  <h2>📋 东方财富股票列表API</h2>
+  <p>push2.eastmoney.com/api/qt/clist/get</p>
+  <div class="status" id="stockListStatus">⏳ 测试中...</div>
+  <div class="detail" id="stockListDetail">请求东方财富股票列表API（主板）...</div>
+</div>
+
 <script>
 document.getElementById('time').textContent = new Date().toLocaleString();
 const R = document.getElementById('results');
