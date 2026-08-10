@@ -311,7 +311,7 @@ async function fetchAllStocks() {
   }
 
   // Simpler approach: get all A-shares in one call
-  const url = `https://push2.eastmoney.com/api/qt/clist/get?cb=&pn=1&pz=5000&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
+  const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81&fields=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21`;
 
   try {
     const resp = await fetch(url);
@@ -366,7 +366,7 @@ async function fetchAllStocks() {
 // ── K-line data ──
 async function fetchKline(code, market, days=60) {
   const secid = `${market}.${code}`;
-  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?cb=&secid=${secid}&ut=b2884a393a59ad64002292a3e90d46a5&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=${days}`;
+  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&ut=b2884a393a59ad64002292a3e90d46a5&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=${days}`;
 
   try {
     const resp = await fetch(url);
@@ -928,8 +928,8 @@ function renderCard(stock) {
       </div>
       <div style="display:flex;gap:6px;margin-top:8px">
         <a href="https://wap.eastmoney.com/quote/stock/${stock.market}.${stock.code}.html" target="_blank" style="flex:1;text-align:center;padding:6px 4px;background:#1e293b;border-radius:6px;font-size:11px;color:#94a3b8;text-decoration:none">📈 东方财富</a>
-        <a href="https://d.10jqka.com.cn/v6/line/hs_${stock.code}/01/last.js" target="_blank" style="flex:1;text-align:center;padding:6px 4px;background:#1e293b;border-radius:6px;font-size:11px;color:#94a3b8;text-decoration:none">📊 同花顺</a>
-        <a href="tdx://view?code=${stock.code}&market=${stock.market}" target="_blank" style="flex:1;text-align:center;padding:6px 4px;background:#1e293b;border-radius:6px;font-size:11px;color:#94a3b8;text-decoration:none">💻 通达信PC</a>
+        <a href="https://stockpage.10jqka.com.cn/${stock.code}/" target="_blank" style="flex:1;text-align:center;padding:6px 4px;background:#1e293b;border-radius:6px;font-size:11px;color:#94a3b8;text-decoration:none">📊 同花顺</a>
+        <a href="tdx://${stock.code}" target="_blank" style="flex:1;text-align:center;padding:6px 4px;background:#1e293b;border-radius:6px;font-size:11px;color:#94a3b8;text-decoration:none">💻 通达信</a>
       </div>
     </div>
   `;
